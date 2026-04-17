@@ -79,9 +79,9 @@ def load_news_catalog(split: str = "train") -> Tuple[Dict, Dict]:
         news_embeddings: {news_id: np.ndarray of shape (EMBEDDING_DIM,)}
     """
     paths = {
-        "train": os.path.join(DATA_BASE, "MINDlarge_train", "MINDlarge_train", "news.tsv"),
-        "dev":   os.path.join(DATA_BASE, "MINDlarge_dev", "MINDlarge_dev", "news.tsv"),
-        "test":  os.path.join(DATA_BASE, "MINDlarge_test", "MINDlarge_test", "news.tsv"),
+        "train": os.path.join(DATA_BASE, "MINDlarge_train", "news.tsv"),
+        "dev":   os.path.join(DATA_BASE, "MINDlarge_dev", "news.tsv"),
+        "test":  os.path.join(DATA_BASE, "MINDlarge_test", "news.tsv"),
     }
     news_path = paths.get(split)
     if not news_path or not os.path.exists(news_path):
@@ -137,9 +137,9 @@ def load_behaviors(split: str = "train", max_impressions: int = 0) -> List[dict]
       }
     """
     paths = {
-        "train": os.path.join(DATA_BASE, "MINDlarge_train", "MINDlarge_train", "behaviors.tsv"),
-        "dev":   os.path.join(DATA_BASE, "MINDlarge_dev", "MINDlarge_dev", "behaviors.tsv"),
-        "test":  os.path.join(DATA_BASE, "MINDlarge_test", "MINDlarge_test", "behaviors.tsv"),
+        "train": os.path.join(DATA_BASE, "MINDlarge_train", "behaviors.tsv"),
+        "dev":   os.path.join(DATA_BASE, "MINDlarge_dev", "behaviors.tsv"),
+        "test":  os.path.join(DATA_BASE, "MINDlarge_test", "behaviors.tsv"),
     }
     behavior_path = paths.get(split)
     if not behavior_path or not os.path.exists(behavior_path):
@@ -379,26 +379,28 @@ def evaluate_on_behaviors(
 
         # Build context
         context_vec = build_user_context(record, news_dict, news_embeddings)
-        context_tensor = torch.FloatTensor(context_vec).unsqueeze(0).to(agent.device)
 
-        # Score each impression article
-        labels = []
-        scores = []
+        # Filter to articles we have embeddings for
+        valid = [(nid, lbl) for nid, lbl in impressions if nid in news_embeddings]
+        if len(valid) < 2 or sum(lbl for _, lbl in valid) == 0:
+            skipped += 1
+            continue
 
-        for news_id, label in impressions:
-            if news_id not in news_embeddings:
-                continue
+        labels = [lbl for _, lbl in valid]
 
-            emb = torch.FloatTensor(news_embeddings[news_id]).unsqueeze(0).to(agent.device)
+        # Batch-score all impression articles in ONE GPU call (20× faster)
+        emb_batch = torch.from_numpy(
+            np.array([news_embeddings[nid] for nid, _ in valid], dtype=np.float32)
+        ).to(agent.device)                                     # (N, emb_dim)
+        ctx_batch = torch.from_numpy(
+            np.tile(context_vec, (len(valid), 1)).astype(np.float32)
+        ).to(agent.device)                                     # (N, ctx_dim)
 
-            with torch.no_grad():
-                agent.policy_net.eval()
-                q_val = agent.policy_net(context_tensor, emb).item()
+        with torch.no_grad():
+            agent.policy_net.eval()
+            scores = agent.policy_net(ctx_batch, emb_batch).squeeze(-1).cpu().tolist()
 
-            labels.append(label)
-            scores.append(q_val)
-
-        if len(labels) < 2 or sum(labels) == 0:
+        if sum(labels) == 0:
             skipped += 1
             continue
 
@@ -566,9 +568,9 @@ def main():
         lr=3e-4,
         epsilon_start=1.0,
         epsilon_min=0.05,
-        epsilon_decay=0.9995,
-        batch_size=64,
-        replay_capacity=10000,
+        epsilon_decay=0.9998,   # slower decay → more exploration over 200k impressions
+        batch_size=256,          # larger batch → better GPU utilization
+        replay_capacity=50_000,  # bigger buffer → less overfitting to recent samples
     )
 
     # ── Optionally load pre-trained model ──

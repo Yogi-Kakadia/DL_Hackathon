@@ -1,31 +1,28 @@
 """
-MIND Dataset Loader
-====================
-Loads real articles from the Microsoft MIND dataset (news.tsv).
-Provides rich article metadata for the recommendation engine.
+MIND Dataset Loader — Semantic TF-IDF Embeddings
+=================================================
+Loads articles from the Microsoft MIND dataset (news.tsv) and computes
+semantically meaningful TF-IDF + SVD embeddings (better than random hashes).
+Caches embeddings to disk so warm restarts are instant.
 
 news.tsv columns (tab-separated):
-  0: News ID
-  1: Category
-  2: SubCategory
-  3: Title
-  4: Abstract
-  5: URL
-  6: Title Entities (JSON)
-  7: Abstract Entities (JSON)
+  0: News ID  1: Category  2: SubCategory  3: Title  4: Abstract
 """
 
 import csv
-import os
-import random
 import hashlib
-import numpy as np
-from typing import List, Dict, Optional
+import os
+import pickle
+import random
+from collections import defaultdict
+from typing import Dict, List, Tuple
 
+import numpy as np
+
+EMBEDDING_DIM = 64
 
 # ──────────────────────────────────────────────────────────────
 # Category → Mood Affinity Mapping
-# Used to bias recommendations based on user mood context
 # ──────────────────────────────────────────────────────────────
 CATEGORY_MOOD_MAP = {
     "health":        {"relaxed": 0.9, "happy": 0.7, "stressed": 0.6, "focused": 0.5, "sad": 0.4, "energetic": 0.6},
@@ -47,212 +44,230 @@ CATEGORY_MOOD_MAP = {
     "northamerica":  {"focused": 0.7, "stressed": 0.4, "energetic": 0.4, "relaxed": 0.3, "happy": 0.3, "sad": 0.3},
 }
 
-# Category icons for the frontend
 CATEGORY_ICONS = {
-    "health": "🏥",
-    "lifestyle": "✨",
-    "sports": "⚽",
-    "news": "📰",
-    "finance": "💰",
-    "entertainment": "🎭",
-    "autos": "🚗",
-    "travel": "✈️",
-    "foodanddrink": "🍔",
-    "tv": "📺",
-    "music": "🎵",
-    "movies": "🎬",
-    "video": "📹",
-    "weather": "🌤️",
-    "kids": "🧒",
-    "middleeast": "🌍",
+    "health": "🏥", "lifestyle": "✨", "sports": "⚽", "news": "📰",
+    "finance": "💰", "entertainment": "🎭", "autos": "🚗", "travel": "✈️",
+    "foodanddrink": "🍔", "tv": "📺", "music": "🎵", "movies": "🎬",
+    "video": "📹", "weather": "🌤️", "kids": "🧒", "middleeast": "🌍",
     "northamerica": "🌎",
 }
 
+CATEGORY_COLORS = {
+    "sports": "#ff6b6b", "finance": "#00d4ff", "health": "#00e88f",
+    "entertainment": "#ffb347", "travel": "#a78bfa", "news": "#7c5cff",
+    "lifestyle": "#ff9f40", "foodanddrink": "#ff6384", "movies": "#818cf8",
+    "tv": "#2dd4bf", "music": "#fbbf24", "autos": "#94a3b8",
+    "weather": "#38bdf8", "kids": "#a3e635", "middleeast": "#fb7185",
+    "northamerica": "#64748b", "video": "#f97316",
+}
+
+
+# ──────────────────────────────────────────────────────────────
+# Semantic TF-IDF + SVD Embeddings
+# ──────────────────────────────────────────────────────────────
+def _compute_tfidf_embeddings(
+    texts: List[str],
+    dim: int,
+    cache_path: str = None,
+) -> np.ndarray:
+    """Compute TF-IDF + Truncated SVD semantic embeddings with disk caching."""
+    if cache_path and os.path.exists(cache_path):
+        with open(cache_path, "rb") as f:
+            data = pickle.load(f)
+        if data.get("n") == len(texts) and data.get("dim") == dim:
+            print(f"[OK] Loaded {len(texts)} cached TF-IDF embeddings")
+            return data["embeddings"]
+
+    print(f"[INFO] Computing TF-IDF + SVD embeddings for {len(texts)} articles…")
+    from sklearn.decomposition import TruncatedSVD
+    from sklearn.feature_extraction.text import TfidfVectorizer
+    from sklearn.preprocessing import normalize
+
+    vectorizer = TfidfVectorizer(
+        max_features=10_000,
+        stop_words="english",
+        ngram_range=(1, 2),
+        sublinear_tf=True,
+        min_df=1,
+    )
+    tfidf = vectorizer.fit_transform(texts)
+
+    n_comp = min(dim, tfidf.shape[0] - 1, tfidf.shape[1] - 1)
+    svd = TruncatedSVD(n_components=n_comp, random_state=42, n_iter=7)
+    emb = svd.fit_transform(tfidf).astype(np.float32)
+    emb = normalize(emb, norm="l2")
+
+    if emb.shape[1] < dim:
+        pad = np.zeros((emb.shape[0], dim - emb.shape[1]), dtype=np.float32)
+        emb = np.hstack([emb, pad])
+
+    if cache_path:
+        os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+        with open(cache_path, "wb") as f:
+            pickle.dump({"n": len(texts), "dim": dim, "embeddings": emb}, f)
+        print(f"[OK] Cached embeddings → {cache_path}")
+
+    return emb
+
 
 def _deterministic_embedding(text: str, dim: int = 64) -> np.ndarray:
-    """
-    Create a deterministic pseudo-embedding from text using SHA-256.
-    This gives consistent, reproducible embeddings without needing
-    a heavy transformer model at hackathon demo time.
-    """
+    """SHA-256 fallback embedding (used by training pipeline for unseen articles)."""
     h = hashlib.sha256(text.encode("utf-8")).hexdigest()
-    # Use the hash to seed a random generator for reproducible vectors
     seed = int(h[:8], 16)
     rng = np.random.RandomState(seed)
     vec = rng.randn(dim).astype(np.float32)
-    # L2 normalize
     norm = np.linalg.norm(vec)
-    if norm > 0:
-        vec /= norm
-    return vec
+    return vec / norm if norm > 0 else vec
 
 
+# ──────────────────────────────────────────────────────────────
+# Main loader
+# ──────────────────────────────────────────────────────────────
 def load_mind_articles(
     data_dir: str,
-    max_articles: int = 200,
-    embedding_dim: int = 64,
-) -> tuple:
+    max_articles: int = 300,
+    embedding_dim: int = EMBEDDING_DIM,
+) -> Tuple[List[dict], np.ndarray]:
     """
-    Load articles from MIND news.tsv.
-
-    Returns:
-        articles: List of article dicts with metadata
-        embeddings: numpy array of shape (N, embedding_dim)
+    Load articles from MIND news.tsv with semantic TF-IDF embeddings.
+    Returns (articles_list, embeddings_array[N, embedding_dim]).
     """
-    # Try multiple possible paths
     possible_paths = [
-        os.path.join(data_dir, "MINDlarge_train", "MINDlarge_train", "news.tsv"),
+        os.path.join(data_dir, "MINDlarge_train", "news.tsv"),   # correct path
+        os.path.join(data_dir, "MINDlarge_dev", "news.tsv"),
+        os.path.join(data_dir, "MINDlarge_test", "news.tsv"),
+        os.path.join(data_dir, "MINDlarge_train", "MINDlarge_train", "news.tsv"),  # legacy
         os.path.join(data_dir, "MINDlarge_dev", "MINDlarge_dev", "news.tsv"),
         os.path.join(data_dir, "news.tsv"),
     ]
 
-    news_path = None
-    for p in possible_paths:
-        if os.path.exists(p):
-            news_path = p
-            break
-
+    news_path = next((p for p in possible_paths if os.path.exists(p)), None)
     if news_path is None:
-        print("[WARN] MIND dataset not found, using synthetic articles.")
+        print("[WARN] MIND dataset not found — using synthetic fallback articles.")
         return _generate_synthetic_articles(max_articles, embedding_dim)
 
     print(f"[INFO] Loading MIND dataset from: {news_path}")
 
-    articles = []
-    seen_categories = set()
-
+    all_rows = []
     with open(news_path, "r", encoding="utf-8") as f:
         reader = csv.reader(f, delimiter="\t")
-        all_rows = []
         for row in reader:
-            if len(row) >= 5 and row[3].strip() and row[4].strip():
+            if len(row) >= 4 and row[3].strip():
                 all_rows.append(row)
 
-    # Sample diverse articles across categories
-    # Group by category first
-    by_category = {}
+    # Balanced sampling across categories (deterministic with seed)
+    by_category: Dict[str, list] = defaultdict(list)
     for row in all_rows:
-        cat = row[1].lower()
-        if cat not in by_category:
-            by_category[cat] = []
-        by_category[cat].append(row)
+        cat = row[1].lower().strip()
+        if cat:
+            by_category[cat].append(row)
 
-    # Take balanced samples from each category
-    per_category = max(5, max_articles // max(1, len(by_category)))
-    sampled_rows = []
-    for cat, rows in by_category.items():
-        sampled_rows.extend(random.sample(rows, min(per_category, len(rows))))
+    rng = random.Random(42)
+    per_category = max(10, max_articles // max(1, len(by_category)))
+    sampled: List = []
+    for cat in sorted(by_category):
+        pool = by_category[cat]
+        sampled.extend(rng.sample(pool, min(per_category, len(pool))))
 
-    # Shuffle and cap
-    random.shuffle(sampled_rows)
-    sampled_rows = sampled_rows[:max_articles]
+    rng.shuffle(sampled)
+    sampled = sampled[:max_articles]
 
-    embeddings_list = []
+    # Build text corpus for TF-IDF
+    corpus = []
+    for row in sampled:
+        title    = row[3].strip()
+        abstract = row[4].strip() if len(row) > 4 else ""
+        cat      = row[1].lower()
+        subcat   = row[2].lower() if len(row) > 2 else ""
+        corpus.append(f"{title} {abstract} {cat} {subcat}")
 
-    for idx, row in enumerate(sampled_rows):
-        news_id = row[0]
-        category = row[1].lower()
-        subcategory = row[2].lower() if len(row) > 2 else ""
-        title = row[3].strip()
-        abstract = row[4].strip() if len(row) > 4 and row[4].strip() else ""
+    cache_dir  = os.path.dirname(news_path)
+    cache_path = os.path.join(cache_dir, f"emb_cache_{max_articles}_{embedding_dim}.pkl")
 
-        # Create embedding from title + abstract
-        embed_text = f"{title} {abstract} {category}"
-        embedding = _deterministic_embedding(embed_text, embedding_dim)
-        embeddings_list.append(embedding)
+    try:
+        embeddings = _compute_tfidf_embeddings(corpus, embedding_dim, cache_path)
+    except Exception as exc:
+        print(f"[WARN] TF-IDF failed ({exc}) — falling back to SHA-256 embeddings")
+        embeddings = np.array(
+            [_deterministic_embedding(t, embedding_dim) for t in corpus],
+            dtype=np.float32,
+        )
 
-        # Mood affinity scores
-        mood_scores = CATEGORY_MOOD_MAP.get(category, {
-            "happy": 0.5, "relaxed": 0.5, "focused": 0.5,
-            "stressed": 0.3, "sad": 0.3, "energetic": 0.5,
-        })
+    articles: List[dict] = []
+    for idx, row in enumerate(sampled):
+        category    = row[1].lower().strip()
+        subcategory = row[2].lower().strip() if len(row) > 2 else ""
+        title       = row[3].strip()
+        abstract    = row[4].strip() if len(row) > 4 and row[4].strip() else ""
 
         articles.append({
-            "id": idx,
-            "news_id": news_id,
-            "title": title,
-            "abstract": abstract,
-            "category": category,
-            "subcategory": subcategory,
-            "icon": CATEGORY_ICONS.get(category, "📄"),
-            "mood_affinity": mood_scores,
+            "id":           idx,
+            "news_id":      row[0],
+            "title":        title,
+            "abstract":     abstract,
+            "category":     category,
+            "subcategory":  subcategory,
+            "icon":         CATEGORY_ICONS.get(category, "📄"),
+            "color":        CATEGORY_COLORS.get(category, "#7c5cff"),
+            "mood_affinity": CATEGORY_MOOD_MAP.get(category, {
+                "happy": 0.5, "relaxed": 0.5, "focused": 0.5,
+                "stressed": 0.3, "sad": 0.3, "energetic": 0.5,
+            }),
         })
 
-    embeddings = np.array(embeddings_list, dtype=np.float32)
-    print(f"[OK] Loaded {len(articles)} articles across {len(by_category)} categories")
-    return articles, embeddings
+    cats = {a["category"] for a in articles}
+    print(f"[OK] Loaded {len(articles)} articles across {len(cats)} categories")
+    return articles, embeddings.astype(np.float32)
 
 
-def _generate_synthetic_articles(
-    count: int = 50, embedding_dim: int = 64
-) -> tuple:
-    """Fallback synthetic articles if MIND data isn't available."""
+# ──────────────────────────────────────────────────────────────
+# Synthetic fallback
+# ──────────────────────────────────────────────────────────────
+def _generate_synthetic_articles(count: int = 50, dim: int = 64) -> Tuple[List[dict], np.ndarray]:
     synthetic = [
-        ("10 Best Post-Workout Recovery Meals", "health", "Fuel your body right after the gym with these nutritious meals."),
-        ("Champions League Quarter-Finals Preview", "sports", "Who will advance? Breaking down all matchups."),
-        ("The Rise of Quantum Computing in 2026", "news", "How quantum processors are reshaping industries."),
-        ("Deep Dive: Renewable Energy Revolution", "news", "Solar and wind power reach record efficiency levels."),
-        ("Global Markets Rally on AI Optimism", "finance", "Tech stocks surge as AI adoption accelerates worldwide."),
-        ("Top 10 Must-Watch Movies This Spring", "entertainment", "From blockbusters to indie gems, here's your watchlist."),
-        ("Electric SUVs: The Complete 2026 Buyer's Guide", "autos", "Compare the best electric SUVs on the market today."),
-        ("Hidden Beach Destinations You Need to Visit", "travel", "Escape the crowds with these secluded paradise spots."),
-        ("Mastering Sourdough: A Beginner's Guide", "foodanddrink", "Learn the art of sourdough from scratch."),
-        ("Breaking: Mars Rover Discovers Water Ice", "news", "NASA confirms largest water ice deposit found on Mars."),
-        ("5-Minute Meditation for Stress Relief", "health", "Quick mindfulness exercises for your busy day."),
-        ("Premier League Title Race Heats Up", "sports", "Three teams separated by just two points."),
-        ("Understanding Blockchain Beyond Crypto", "finance", "Real-world blockchain applications transforming supply chains."),
-        ("The Psychology of Color in Interior Design", "lifestyle", "How colors affect mood and productivity at home."),
-        ("Best New Albums Dropping This Week", "music", "Fresh releases from top artists across all genres."),
-        ("Space Tourism: What to Expect in 2026", "travel", "Commercial space flights are finally becoming reality."),
-        ("AI-Powered Cooking: Smart Kitchen Tech", "foodanddrink", "Gadgets that are revolutionizing home cooking."),
-        ("Formula 1: Season Mid-Point Analysis", "sports", "Stats, standings, and predictions for the rest of the season."),
-        ("Guided Sleep Story: The Enchanted Forest", "health", "Drift off to dreamland with this calming narrative."),
-        ("The Future of Remote Work", "lifestyle", "How companies are reimagining the hybrid workplace."),
-        ("Oscar Predictions: Who Will Win Big?", "movies", "Our expert predictions for every major category."),
-        ("Teaching Kids to Code: Fun Platforms", "kids", "Age-appropriate programming tools for young minds."),
-        ("Weather Alert: Heat Wave Approaching", "weather", "Prepare for record temperatures this weekend."),
-        ("Late Night TV: Best Moments This Week", "tv", "The funniest clips from your favorite hosts."),
-        ("Viral Videos: This Week's Internet Gold", "video", "The most shared videos breaking the internet."),
-        ("Yoga for Beginners: Start Your Journey", "health", "Gentle poses perfect for newcomers to yoga."),
-        ("Cryptocurrency Market Weekly Roundup", "finance", "Bitcoin, Ethereum, and altcoin performance analysis."),
-        ("The Art of Japanese Garden Design", "lifestyle", "Creating tranquility with traditional garden principles."),
-        ("New Electric Vehicle Tax Credits Explained", "autos", "How to maximize savings on your next EV purchase."),
-        ("Streaming Wars: Which Service Wins?", "entertainment", "Comparing content libraries and pricing across platforms."),
+        ("Champions League Quarter-Finals Preview", "sports",        "Breaking down all matchups for the quarter finals."),
+        ("Global Markets Rally on AI Optimism",     "finance",       "Tech stocks surge as AI adoption accelerates worldwide."),
+        ("Top 10 Must-Watch Movies This Spring",    "entertainment", "From blockbusters to indie gems, your watchlist."),
+        ("Electric SUVs: 2026 Buyer's Guide",       "autos",         "Compare the best electric SUVs on the market today."),
+        ("Hidden Beach Destinations",               "travel",        "Escape the crowds with these secluded paradise spots."),
+        ("5-Minute Meditation for Stress Relief",   "health",        "Quick mindfulness exercises for a busy day."),
+        ("Mastering Sourdough: A Beginner's Guide", "foodanddrink",  "Learn the art of sourdough from scratch."),
+        ("Premier League Title Race Heats Up",      "sports",        "Three teams separated by just two points with 8 games left."),
+        ("Understanding Blockchain Beyond Crypto",  "finance",       "Real-world blockchain applications transforming supply chains."),
+        ("The Psychology of Color in Interior Design", "lifestyle",  "How colors affect mood and productivity at home."),
+        ("Best New Albums Dropping This Week",      "music",         "Fresh releases from top artists across all genres."),
+        ("Space Tourism: What to Expect in 2026",   "travel",        "Commercial space flights are finally becoming reality."),
+        ("Formula 1: Season Mid-Point Analysis",    "sports",        "Stats, standings, and predictions for the rest of the season."),
+        ("Oscar Predictions: Who Will Win Big?",    "movies",        "Our expert predictions for every major Oscar category."),
+        ("Teaching Kids to Code: Fun Platforms",    "kids",          "Age-appropriate programming tools for young minds."),
+        ("Late Night TV: Best Moments This Week",   "tv",            "The funniest clips from your favorite late-night hosts."),
+        ("Cryptocurrency Market Weekly Roundup",    "finance",       "Bitcoin, Ethereum, and altcoin performance analysis."),
+        ("Yoga for Beginners: Start Your Journey",  "health",        "Gentle poses perfect for newcomers to yoga practice."),
+        ("Breaking: Record Heat Wave Approaching",  "weather",       "Prepare for record temperatures across the nation."),
+        ("Streaming Wars: Which Service Wins?",     "entertainment", "Comparing content libraries and pricing across platforms."),
     ]
-
-    articles = []
-    embeddings_list = []
-
-    for idx, (title, category, abstract) in enumerate(synthetic):
-        embedding = _deterministic_embedding(f"{title} {abstract} {category}", embedding_dim)
-        embeddings_list.append(embedding)
-
-        mood_scores = CATEGORY_MOOD_MAP.get(category, {
-            "happy": 0.5, "relaxed": 0.5, "focused": 0.5,
-            "stressed": 0.3, "sad": 0.3, "energetic": 0.5,
-        })
-
+    articles: List[dict] = []
+    embs: List[np.ndarray] = []
+    for idx, (title, cat, abstract) in enumerate(synthetic):
+        embs.append(_deterministic_embedding(f"{title} {abstract} {cat}", dim))
         articles.append({
-            "id": idx,
-            "news_id": f"SYN{idx:04d}",
-            "title": title,
-            "abstract": abstract,
-            "category": category,
-            "subcategory": "",
-            "icon": CATEGORY_ICONS.get(category, "📄"),
-            "mood_affinity": mood_scores,
+            "id": idx, "news_id": f"SYN{idx:04d}",
+            "title": title, "abstract": abstract,
+            "category": cat, "subcategory": "",
+            "icon": CATEGORY_ICONS.get(cat, "📄"),
+            "color": CATEGORY_COLORS.get(cat, "#7c5cff"),
+            "mood_affinity": CATEGORY_MOOD_MAP.get(cat, {
+                "happy": 0.5, "relaxed": 0.5, "focused": 0.5,
+                "stressed": 0.3, "sad": 0.3, "energetic": 0.5,
+            }),
         })
 
-    # Pad with duplicates if needed
     while len(articles) < count:
-        src_idx = random.randint(0, len(synthetic) - 1)
-        new_idx = len(articles)
-        art = articles[src_idx].copy()
-        art["id"] = new_idx
+        src = random.randint(0, len(synthetic) - 1)
+        art = articles[src].copy()
+        art["id"] = len(articles)
         articles.append(art)
-        embeddings_list.append(embeddings_list[src_idx].copy())
+        embs.append(embs[src].copy())
 
-    embeddings = np.array(embeddings_list[:count], dtype=np.float32)
-    articles = articles[:count]
-    print(f"[OK] Generated {len(articles)} synthetic articles")
-    return articles, embeddings
+    print(f"[OK] Generated {min(count, len(articles))} synthetic articles")
+    return articles[:count], np.array(embs[:count], dtype=np.float32)

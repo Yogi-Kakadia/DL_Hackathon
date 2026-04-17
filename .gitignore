@@ -14,7 +14,7 @@ backend/venv/pyvenv.cfg
 backend/venv/share/
 
 # MIND dataset (too large for git)
-backend/venv/data/MINDlarge_*/
+backend/data/
 
 # Trained model (optional - can be regenerated)
 backend/venv/model/
