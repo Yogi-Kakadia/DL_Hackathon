@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environment - ignore packages but keep our app code
+backend/venv/Lib/
+backend/venv/Scripts/
+backend/venv/Include/
+backend/venv/pyvenv.cfg
+backend/venv/share/
+
+# MIND dataset (too large for git)
+backend/venv/data/MINDlarge_*/
+
+# Trained model (optional - can be regenerated)
+backend/venv/model/
+
+# Node
+node_modules/
+frontend/node_modules/
+
+# Build output
+frontend/dist/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+.env.local

@@ -88,6 +88,28 @@ export default function AgentStats({ stats, onRefresh }) {
           </div>
         </div>
 
+        {/* Cold Start → Personalized Progress */}
+        {stats.cold_start_progress !== undefined && (
+          <div className="cold-start-progress">
+            <div className="epsilon-header">
+              <span className="epsilon-label">
+                {stats.cold_start_progress < 0.3
+                  ? '🆕 Learning preferences...'
+                  : stats.cold_start_progress < 0.7
+                  ? '📈 Building profile...'
+                  : '✅ Personalized!'}
+              </span>
+              <span className="epsilon-value">{Math.round(stats.cold_start_progress * 100)}%</span>
+            </div>
+            <div className="epsilon-track">
+              <div
+                className="personalization-fill"
+                style={{ width: `${stats.cold_start_progress * 100}%` }}
+              />
+            </div>
+          </div>
+        )}
+
         {/* Loss Chart */}
         {stats.recent_losses && stats.recent_losses.length > 0 && (
           <div className="loss-chart">

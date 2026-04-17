@@ -1,4 +1,4 @@
-export default function Header({ stats, explorationRate, latency }) {
+export default function Header({ stats, explorationRate, latency, isColdStart }) {
   const isExploring = explorationRate !== null && explorationRate > 0.3
 
   return (
@@ -12,6 +12,13 @@ export default function Header({ stats, explorationRate, latency }) {
       </div>
 
       <div className="header-status">
+        {isColdStart && (
+          <div className="status-badge cold-start-badge">
+            <span className="cold-start-pulse"></span>
+            🆕 Cold Start
+          </div>
+        )}
+
         {latency !== null && (
           <div className="status-badge">
             ⚡ {latency}ms

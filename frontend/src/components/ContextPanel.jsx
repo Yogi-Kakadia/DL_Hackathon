@@ -20,9 +20,27 @@ const SPEEDS = [
   { key: 'fast', label: '🏃 Fast' },
 ]
 
-export default function ContextPanel({ context, updateContext, onRecommend, loading }) {
+export default function ContextPanel({ context, updateContext, onRecommend, onColdStart, loading, isColdStart }) {
   return (
     <div id="context-panel">
+      {/* ── Cold Start Button ── */}
+      <div className="context-section">
+        <button
+          id="btn-cold-start"
+          className={`cold-start-btn ${isColdStart ? 'active' : ''}`}
+          onClick={onColdStart}
+          disabled={loading}
+        >
+          🆕 New User (Cold Start Demo)
+        </button>
+        {isColdStart && (
+          <div className="cold-start-banner">
+            <span className="cold-start-pulse"></span>
+            <span>Exploring — interact with articles to personalize</span>
+          </div>
+        )}
+      </div>
+
       {/* ── Mood Selector ── */}
       <div className="context-section">
         <div className="glass-card">

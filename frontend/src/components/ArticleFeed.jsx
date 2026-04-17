@@ -6,6 +6,7 @@ export default function ArticleFeed({
   onFeedback,
   feedbackGiven,
   loading,
+  isColdStart,
 }) {
   if (recommendations.length === 0 && !loading) {
     return (
@@ -18,6 +19,10 @@ export default function ArticleFeed({
           <strong> "Get Personalized Recommendations" </strong>
           to see the RL agent in action.
         </p>
+        <p className="empty-description" style={{ marginTop: '0.75rem', fontSize: '0.85rem', opacity: 0.7 }}>
+          💡 Try clicking <strong>"New User (Cold Start Demo)"</strong> first to see
+          how the agent handles unknown users!
+        </p>
       </div>
     )
   }
@@ -29,14 +34,25 @@ export default function ArticleFeed({
           <h1 className="feed-title">
             {loading ? '⏳ Loading...' : `📰 Recommended for ${context.mood}`}
           </h1>
-          {latency !== null && (
-            <span className="feed-meta">
-              {recommendations.length} articles · {latency}ms ·
-              ε={explorationRate}
-            </span>
-          )}
+          <span className="feed-meta">
+            {recommendations.length} articles · {latency}ms ·
+            ε={explorationRate}
+            {isColdStart && (
+              <span className="cold-start-tag">🆕 COLD START</span>
+            )}
+          </span>
         </div>
       </div>
+
+      {isColdStart && (
+        <div className="cold-start-info-bar">
+          <span className="cold-start-pulse"></span>
+          <span>
+            <strong>Cold Start Mode:</strong> The agent is exploring diverse categories.
+            Like or skip articles to teach it your preferences — watch it personalize in real-time!
+          </span>
+        </div>
+      )}
 
       <div className="article-grid">
         {recommendations.map((article, i) => {
