@@ -94,6 +94,7 @@ export default function ArticleFeed({
   isAutoDemo,
   preferences,
   stats,
+  onReadReq,
 }) {
   const [visibleCount, setVisibleCount] = useState(8)
 
@@ -189,7 +190,11 @@ export default function ArticleFeed({
                   </span>
                   <span className="card-sep">·</span>
                   <span className="card-time">{rt} min read</span>
-                  <span className="card-rank">#{article.rank || i + 1}</span>
+                  {article.is_exploration ? (
+                    <span className="card-rank" style={{ background: 'var(--accent-primary)', color: '#fff' }}>🎲 Random Discovery</span>
+                  ) : (
+                    <span className="card-rank">#{article.rank || i + 1}</span>
+                  )}
                   {acted && (
                     <span className="card-acted-pill" style={{ color: ACTED_COLOR[acted], borderColor: `${ACTED_COLOR[acted]}44` }}>
                       {ACTED_LABEL[acted]}
@@ -209,7 +214,7 @@ export default function ArticleFeed({
                       <button
                         key={a.key}
                         className={`action-btn ${a.cls} ${acted ? (acted === a.key ? 'chosen' : 'muted') : ''}`}
-                        onClick={() => !acted && onFeedback(article.id, a.key)}
+                        onClick={() => !acted && (a.key === 'read' ? onReadReq(article) : onFeedback(article.id, a.key))}
                         title={`${a.key} · reward ${a.reward}`}
                         disabled={!!acted}
                       >

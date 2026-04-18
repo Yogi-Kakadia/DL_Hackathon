@@ -44,7 +44,7 @@ app.add_middleware(
 # ──────────────────────────────────────────────────────────────
 DATA_DIR       = os.path.join(os.path.dirname(__file__), "..", "data")
 EMBEDDING_DIM  = 64
-CONTEXT_DIM    = 32
+CONTEXT_DIM    = 64
 MAX_ARTICLES   = 250
 
 ARTICLES, ARTICLE_EMBEDDINGS_NP = load_mind_articles(
@@ -70,8 +70,6 @@ if os.path.exists(MODEL_PATH):
     agent.target_net.load_state_dict(ckpt["target_net"])
     agent.optimizer.load_state_dict(ckpt["optimizer"])
     agent.epsilon       = ckpt.get("epsilon", 0.1)
-    agent.total_steps   = ckpt.get("total_steps", 0)
-    agent.total_reward  = ckpt.get("total_reward", 0.0)
     print(f"[OK] Loaded model  ε={agent.epsilon:.4f}  steps={agent.total_steps}")
 else:
     print("[INFO] No pre-trained model — starting fresh.")
@@ -232,6 +230,9 @@ class ContextPayload(BaseModel):
     time_of_day:      str           = Field(..., description="Morning/Afternoon/Evening/Night")
     reading_speed:    Optional[str] = Field(default="medium", description="slow/medium/fast")
     session_duration: Optional[int] = Field(default=0)
+    age:              Optional[int] = Field(default=25)
+    gender:           Optional[str] = Field(default="Unknown")
+    location:         Optional[str] = Field(default="Unknown")
 
 
 class FeedbackPayload(BaseModel):
@@ -239,25 +240,60 @@ class FeedbackPayload(BaseModel):
     article_id: int   = Field(ge=0)
     action:     str   = Field(..., description="read/skip/like/dislike")
     dwell_time: Optional[float] = Field(default=0.0)
+    scroll_speed: Optional[float] = Field(default=0.0)
+    section_times: Optional[List[float]] = Field(default_factory=list)
 
 
 class SwitchPersonaPayload(BaseModel):
     persona_id: str
     user_id:    str
 
+class UserProfile(BaseModel):
+    user_id: str
+    name: str
+    age: int
+    location: str
+    demographics: str
+    interests: List[str]
+
+user_profiles: Dict[str, dict] = {}
+
+@app.post("/user/register")
+async def register_user(profile: UserProfile):
+    """Saves user onboarding data and pre-warms category preferences."""
+    user_profiles[profile.user_id] = profile.dict()
+    # Pre-warm based on strict interests
+    user_category_preferences[profile.user_id] = {}
+    for interest in profile.interests:
+        user_category_preferences[profile.user_id][interest.lower()] = 3.0
+    return {"status": "success", "message": "User initialized"}
+
+@app.get("/users")
+async def get_users():
+    return {"status": "success", "users": list(user_profiles.values())}
+
+@app.delete("/user/{user_id}")
+async def delete_user(user_id: str):
+    user_profiles.pop(user_id, None)
+    user_history.pop(user_id, None)
+    user_category_preferences.pop(user_id, None)
+    user_context_cache.pop(user_id, None)
+    user_clicked_embeddings.pop(user_id, None)
+    return {"status": "success"}
 
 # ──────────────────────────────────────────────────────────────
 # Context encoding  (32-dim)
 # ──────────────────────────────────────────────────────────────
 MOOD_ENC  = {"happy":[1,0,0,0,0,0],"sad":[0,1,0,0,0,0],"relaxed":[0,0,1,0,0,0],
-             "stressed":[0,0,0,1,0,0],"focused":[0,0,0,0,1,0],"energetic":[0,0,0,0,0,1]}
+             "stressed":[0,0,0,1,0,0],"focused":[0,0,0,0,1,0],"energetic":[0,0,0,0,0,1],
+             "neutral":[0,0,0,0,0,0]}
 TIME_ENC  = {"Morning":[1,0,0,0],"Afternoon":[0,1,0,0],"Evening":[0,0,1,0],"Night":[0,0,0,1]}
 SPEED_ENC = {"slow":[1,0,0],"medium":[0,1,0],"fast":[0,0,1]}
 
 
 def encode_context(payload: ContextPayload) -> np.ndarray:
     """
-    32-dim context vector:
+    64-dim context vector:
       [0:6]   Mood one-hot
       [6:10]  Time-of-day one-hot
       [10:13] Reading speed one-hot
@@ -266,6 +302,10 @@ def encode_context(payload: ContextPayload) -> np.ndarray:
       [15]    Session duration / 120
       [16:22] Cross-features: mood × BPM factor
       [22:32] User history embedding (mean of recent clicked articles → 10D)
+      [32:36] Age bucket one-hot (<20, 20-30, 30-50, >50)
+      [36:39] Gender one-hot (Male, Female, Other)
+      [39:45] Location hash mapped to 6D
+      [45:64] Padding (Reserved for future features)
     """
     vec = np.zeros(CONTEXT_DIM, dtype=np.float32)
 
@@ -289,6 +329,26 @@ def encode_context(payload: ContextPayload) -> np.ndarray:
         chunk   = EMBEDDING_DIM // 10
         for i in range(10):
             vec[22 + i] = float(np.mean(avg_emb[i * chunk : (i + 1) * chunk]))
+
+    # Age bucket encoding [32:36]
+    age = payload.age or 25
+    if age < 20:   vec[32] = 1.0
+    elif age < 30: vec[33] = 1.0
+    elif age < 50: vec[34] = 1.0
+    else:          vec[35] = 1.0
+        
+    # Gender encoding [36:39]
+    gender = (payload.gender or "").lower()
+    if "male" in gender and "female" not in gender: vec[36] = 1.0
+    elif "female" in gender:                        vec[37] = 1.0
+    else:                                           vec[38] = 1.0
+        
+    # Location hash mapping [39:45]
+    loc = (payload.location or "Unknown").lower()
+    loc_hash = hash(loc)
+    for i in range(6):
+        if (loc_hash >> i) & 1:
+            vec[39 + i] = 1.0
 
     return vec
 
@@ -401,6 +461,12 @@ async def get_recommendations(context: ContextPayload):
 
     mood       = context.mood.lower()
     ctx_boosts = _context_boost(context.bpm, context.ambient_noise, context.time_of_day)
+
+    if mood == 'happy':
+        # Hard override for positive news injection
+        for c in ["lifestyle", "sports", "movies", "music", "tv", "entertainment", "foodanddrink", "travel"]:
+            ctx_boosts[c] = ctx_boosts.get(c, 0) + 0.60
+
     user_prefs = user_category_preferences.get(context.user_id, {})
     max_pref   = max(user_prefs.values(), default=1.0) or 1.0
 
@@ -426,19 +492,33 @@ async def get_recommendations(context: ContextPayload):
 
         # Blended final score
         blend = 0.40 * mood_score + 0.35 * rl_score + 0.25 * pref_score
+        
+        candidates.append({
+            **art,
+            "rank": rl_rank + 1,
+            "mood_relevance": blend,
+            "is_exploration": False,
+        })
 
-        art["mood_relevance"] = round(mood_score, 2)
-        art["_blend"]         = blend
-        candidates.append(art)
-
-    # Sort by blended score before diversity filter
-    candidates.sort(key=lambda x: x["_blend"], reverse=True)
+    # Sort strictly by blend score descending
+    candidates.sort(key=lambda x: x["mood_relevance"], reverse=True)
+    
+    # ── Explicit Exploration Injection ──
+    # Select 1 random article from the long tail to challenge their active preferences
+    if len(ARTICLES) > 50:
+        exploring_idx = random.randint(0, len(ARTICLES)-1)
+        if exploring_idx not in top_indices:
+            exploring_art = ARTICLES[exploring_idx].copy()
+            exploring_art["rank"] = 0
+            exploring_art["mood_relevance"] = 0.5
+            exploring_art["is_exploration"] = True
+            
+            # Inject predictably near top/middle (e.g. index 1 or 2)
+            inject_idx = random.randint(1, min(3, len(candidates)))
+            candidates.insert(inject_idx, exploring_art)
 
     recommended = _diversify(candidates, n=16)
-    for rank, art in enumerate(recommended):
-        art["rank"] = rank + 1
-        art.pop("_blend", None)
-
+    
     elapsed = round((time.time() - start) * 1000, 1)
     return {
         "status":           "success",
@@ -462,17 +542,28 @@ async def process_feedback(feedback: FeedbackPayload):
         raise HTTPException(status_code=404, detail="Article not found")
 
     ctx_vec     = user_context_cache.get(feedback.user_id,
-                     np.random.randn(CONTEXT_DIM).astype(np.float32))
+                     np.random.randn(CONTEXT_DIM).astype(np.float32)).copy()
     article     = ARTICLES[feedback.article_id]
     art_emb     = ARTICLE_EMBEDDINGS_NP[feedback.article_id]
     reward      = compute_reward(feedback.action, feedback.dwell_time or 0.0)
-    info        = agent.update(ctx_vec, art_emb, reward)
-    agent.action_counts[feedback.article_id] = agent.action_counts.get(feedback.article_id, 0) + 1
 
     # Track clicked embeddings (for user history in context)
     if feedback.action in ("like", "read"):
         uid_embs = user_clicked_embeddings.setdefault(feedback.user_id, [])
         uid_embs.append(art_emb.copy())
+
+    # Compute S_{t+1} by updating the user history part of the context
+    next_ctx_vec = ctx_vec.copy()
+    clicked = user_clicked_embeddings.get(feedback.user_id, [])
+    if clicked:
+        recent  = np.array(clicked[-15:])
+        avg_emb = np.mean(recent, axis=0)
+        chunk   = EMBEDDING_DIM // 10
+        for i in range(10):
+            next_ctx_vec[22 + i] = float(np.mean(avg_emb[i * chunk : (i + 1) * chunk]))
+
+    info = agent.update(ctx_vec, art_emb, reward, next_ctx_vec, CANDIDATE_EMBEDDINGS)
+    agent.action_counts[feedback.article_id] = agent.action_counts.get(feedback.article_id, 0) + 1
 
     # Track category preferences
     prefs = user_category_preferences.setdefault(feedback.user_id, {})
@@ -490,6 +581,8 @@ async def process_feedback(feedback: FeedbackPayload):
         "action":          feedback.action,
         "reward":          reward,
         "dwell_time":      feedback.dwell_time or 0,
+        "scroll_speed":    feedback.scroll_speed or 0,
+        "section_times":   feedback.section_times or [],
         "interaction_num": len(hist) + 1,
     })
 

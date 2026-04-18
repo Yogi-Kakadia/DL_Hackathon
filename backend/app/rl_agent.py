@@ -106,12 +106,12 @@ class PrioritizedReplayBuffer:
         self.buffer: deque = deque(maxlen=capacity)
         self.priorities: deque = deque(maxlen=capacity)
 
-    def push(self, context: np.ndarray, action: np.ndarray, reward: float):
+    def push(self, context: np.ndarray, action: np.ndarray, reward: float, next_context: np.ndarray):
         max_priority = max(self.priorities, default=1.0)
-        self.buffer.append((context, action, reward))
+        self.buffer.append((context, action, reward, next_context))
         self.priorities.append(max_priority)
 
-    def sample(self, batch_size: int) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    def sample(self, batch_size: int) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         priorities = np.array(self.priorities, dtype=np.float64)
         probs = priorities ** self.alpha
         probs /= probs.sum()
@@ -122,7 +122,8 @@ class PrioritizedReplayBuffer:
         contexts = np.array([b[0] for b in batch])
         actions  = np.array([b[1] for b in batch])
         rewards  = np.array([b[2] for b in batch])
-        return contexts, actions, rewards
+        next_contexts = np.array([b[3] for b in batch])
+        return contexts, actions, rewards, next_contexts
 
     def update_priorities(self, indices: List[int], td_errors: np.ndarray):
         for idx, err in zip(indices, td_errors):
@@ -243,28 +244,28 @@ class RLAgent:
 
     # ─── STORE EXPERIENCE ────────────────────────────────────
     def store_experience(
-        self, context: np.ndarray, action: np.ndarray, reward: float, article_idx: int = -1
+        self, context: np.ndarray, action: np.ndarray, reward: float, next_context: np.ndarray, article_idx: int = -1
     ):
         """Push a single interaction into the replay buffer."""
-        self.replay.push(context, action, reward)
+        self.replay.push(context, action, reward, next_context)
         key = article_idx if article_idx >= 0 else hash(action.tobytes())
         self.action_counts[key] = self.action_counts.get(key, 0) + 1
         self.total_reward += reward
 
     # ─── UPDATE (TRAIN) ─────────────────────────────────────
     def update(
-        self, context: np.ndarray, action: np.ndarray, reward: float
+        self, context: np.ndarray, action: np.ndarray, reward: float, next_context: np.ndarray, all_candidates: torch.Tensor
     ) -> dict:
         """
         Full learning step:
-          1. Store experience
+          1. Store experience (S_t, a_t, r_t, S_{t+1})
           2. Sample mini-batch from replay
-          3. Compute Huber loss vs target network
+          3. Compute Huber loss vs target network (using Bellman max_next_q)
           4. Backprop + gradient clipping
           5. Polyak-average the target network
           6. Decay epsilon
         """
-        self.store_experience(context, action, reward, article_idx=-1)
+        self.store_experience(context, action, reward, next_context, article_idx=-1)
 
         info = {
             "loss": 0.0,
@@ -281,21 +282,32 @@ class RLAgent:
 
         # ── Sample mini-batch (use min of available vs batch_size) ──
         actual_batch = min(len(self.replay), self.batch_size)
-        contexts, actions, rewards = self.replay.sample(actual_batch)
+        contexts, actions, rewards, next_contexts = self.replay.sample(actual_batch)
 
         ctx_t = torch.FloatTensor(contexts).to(self.device)
         act_t = torch.FloatTensor(actions).to(self.device)
         rew_t = torch.FloatTensor(rewards).to(self.device)
+        next_ctx_t = torch.FloatTensor(next_contexts).to(self.device)
 
         # ── Predict Q-values ──
         self.policy_net.train()
         pred_q = self.policy_net(ctx_t, act_t).squeeze(-1)
 
-        # ── Target Q-values (from slow-moving target net) ──
+        # ── Target Q-values (DQN Bellman equation) ──
         with torch.no_grad():
-            target_q = self.target_net(ctx_t, act_t).squeeze(-1)
-            # Blended target: immediate reward + γ * target estimate
-            targets = rew_t + self.gamma * target_q * 0.1  # mild bootstrapping
+            num_cands = all_candidates.shape[0]
+            cand_t = all_candidates.to(self.device)
+            # Expand next_context: (Batch, NumCands, 32)
+            expanded_next_ctx = next_ctx_t.unsqueeze(1).expand(-1, num_cands, -1)
+            # Expand candidates: (Batch, NumCands, 64)
+            expanded_cands = cand_t.unsqueeze(0).expand(actual_batch, -1, -1)
+            
+            # Predict Q values for all actions in the next state
+            next_qs = self.target_net(expanded_next_ctx, expanded_cands).squeeze(-1) # (Batch, NumCands)
+            max_next_q, _ = torch.max(next_qs, dim=1) # (Batch,)
+            
+            # Target = R_t + gamma * max Q(S_{t+1}, a')
+            targets = rew_t + self.gamma * max_next_q
 
         # ── Loss & Backprop ──
         loss = self.loss_fn(pred_q, targets)

@@ -69,6 +69,8 @@ export default function UserHistory({ history }) {
                 <span className="history-item-meta">
                   {actionEmoji} {item.action} · {item.category} · reward: {item.reward > 0 ? '+' : ''}{item.reward}
                   {item.dwell_time > 0 && ` · ${item.dwell_time}s`}
+                  {item.scroll_speed > 0 && ` · ${item.scroll_speed}px/s`}
+                  {item.section_times?.length > 0 && ` · [${item.section_times.map(t=>t.toFixed(1)).join(',')}]`}
                 </span>
               </div>
             </div>

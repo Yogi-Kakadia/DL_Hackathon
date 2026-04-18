@@ -8,7 +8,7 @@ const PERSONA_LABELS = {
   cold_start: { name: 'New User',     emoji: '🆕', color: '#7c5cff' },
 }
 
-export default function Header({ stats, explorationRate, latency, isColdStart, activePersona }) {
+export default function Header({ userName, onReset, stats, explorationRate, latency, isColdStart, activePersona, isAutoDemo, attention }) {
   const isExploring = explorationRate !== null && explorationRate > 0.3
   const persona     = activePersona ? PERSONA_LABELS[activePersona] : null
 
@@ -21,8 +21,19 @@ export default function Header({ stats, explorationRate, latency, isColdStart, a
           <div className="header-subtitle">Deep RL · Real-Time Adaptation · MIND Dataset</div>
         </div>
       </div>
-
       <div className="header-status">
+        {userName && (
+           <div className="status-badge" style={{ background: 'var(--accent-primary)', color: '#fff', border: 'none' }}>
+             👤 {userName}
+           </div>
+        )}
+        <button 
+           className="status-badge" 
+           style={{ background: 'rgba(124, 92, 255, 0.1)', color: '#7c5cff', border: '1px dashed #7c5cff', cursor: 'pointer' }}
+           onClick={() => onReset()}
+        >
+          [+] New User
+        </button>
         {/* Active persona badge */}
         {persona && (
           <div className="status-badge" style={{
@@ -31,13 +42,6 @@ export default function Header({ stats, explorationRate, latency, isColdStart, a
             color:        persona.color,
           }}>
             {persona.emoji} {persona.name}
-          </div>
-        )}
-
-        {isColdStart && (
-          <div className="status-badge cold-start-badge">
-            <span className="cold-start-pulse" />
-            🆕 Cold Start
           </div>
         )}
 
@@ -59,8 +63,31 @@ export default function Header({ stats, explorationRate, latency, isColdStart, a
           </div>
         )}
 
+        {attention && (
+          <div 
+            className="status-badge" 
+            style={{ cursor: attention.isLoading ? 'wait' : 'pointer' }}
+            onClick={() => {
+              if (!attention.isLoading) attention.toggleCamera()
+            }}
+            title="Toggle attention tracker"
+          >
+            {attention.isLoading 
+              ? '⏳ Loading Model...'
+              : !attention.cameraEnabled 
+                ? '📷 Track Attention'
+                : (
+                  <>
+                    <span className={`status-dot ${attention.isLooking ? 'online' : 'away'}`} style={{ background: attention.isLooking ? '#00e88f' : '#ff4444', boxShadow: `0 0 8px ${attention.isLooking ? '#00e88f' : '#ff4444'}`}} />
+                    {attention.isLooking ? `Reading (${attention.detectedMood})` : 'Looking Away'}
+                  </>
+                )
+            }
+          </div>
+        )}
+
         <div className="status-badge">
-          <span className="status-dot" />
+          <span className="status-dot online" />
           Agent Online
         </div>
       </div>

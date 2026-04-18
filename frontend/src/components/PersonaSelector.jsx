@@ -1,13 +1,5 @@
 const PERSONAS = [
   {
-    id: 'cold_start',
-    name: 'New User',
-    emoji: '🆕',
-    title: 'Cold Start Demo',
-    description: 'Zero history — watch RL explore & learn!',
-    color: '#7c5cff',
-  },
-  {
     id: 'alex',
     name: 'Alex Chen',
     emoji: '⚽',
@@ -57,17 +49,61 @@ const PERSONAS = [
   },
 ]
 
-export default function PersonaSelector({ activePersona, onSelectPersona, loading }) {
+export default function PersonaSelector({ activePersona, onSelectPersona, loading, registeredUsers=[], onCreateNew, onDeleteUser }) {
   return (
     <div className="persona-selector">
       <div className="glass-card-header" style={{ marginBottom: 'var(--space-md)' }}>
         <span className="glass-card-title">👤 User Profiles</span>
         <span style={{ fontSize: '0.68rem', color: 'var(--text-tertiary)' }}>
-          Select to demo personalization
+          Manage profiles & personas
         </span>
       </div>
 
       <div className="persona-grid">
+        {/* Create new explicit trigger */}
+        <button 
+           className="persona-card"
+           style={{ '--persona-color': '#7c5cff', border: '1px dashed #7c5cff', background: 'rgba(124, 92, 255, 0.05)' }}
+           onClick={() => !loading && onCreateNew()}
+           disabled={loading}
+           title="Create a new custom user"
+        >
+           <span className="persona-emoji">➕</span>
+           <div className="persona-info">
+             <div className="persona-name">Create Profile</div>
+             <div className="persona-role">New User Flow</div>
+           </div>
+        </button>
+
+        {registeredUsers.length > 0 && <div className="sidebar-divider">MY PROFILES</div>}
+        {registeredUsers.map(u => (
+          <div key={u.user_id} style={{ display: 'flex', gap: '4px', width: '100%' }}>
+            <button
+              className={`persona-card ${activePersona === u.user_id ? 'active' : ''}`}
+              style={{ '--persona-color': '#00e88f', flex: 1 }}
+              onClick={() => !loading && onSelectPersona(u, true)}
+              disabled={loading}
+              title={`Location: ${u.location}`}
+            >
+              <span className="persona-emoji">🙂</span>
+              <div className="persona-info">
+                <div className="persona-name">{u.name}</div>
+                <div className="persona-role">{u.demographics}</div>
+              </div>
+              {activePersona === u.user_id && <span className="persona-active-dot" />}
+            </button>
+            <button 
+              style={{ width: '40px', background: 'rgba(255,0,0,0.1)', border: '1px solid rgba(255,0,0,0.2)', borderRadius: '12px', cursor: 'pointer' }}
+              onClick={() => onDeleteUser(u.user_id)}
+              disabled={loading}
+              title="Delete User"
+            >
+              🗑️
+            </button>
+          </div>
+        ))}
+
+        <div className="sidebar-divider" style={{ marginTop: '12px' }}>DEMO PERSONAS</div>
         {PERSONAS.map(p => (
           <button
             key={p.id}

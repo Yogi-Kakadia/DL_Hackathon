@@ -454,6 +454,13 @@ def train_on_behaviors(
     total_reward = 0.0
     eval_results_log = []
 
+    # Pre-compute all_candidates tensor once
+    all_emb_list = list(news_embeddings.values())
+    if all_emb_list:
+        all_candidates_tensor = torch.FloatTensor(np.array(all_emb_list)).to(agent.device)
+    else:
+        all_candidates_tensor = torch.zeros((1, EMBEDDING_DIM)).to(agent.device)
+
     for i, record in enumerate(records):
         # Build context from this user's history
         context_vec = build_user_context(record, news_dict, news_embeddings)
@@ -471,7 +478,7 @@ def train_on_behaviors(
             else:
                 reward = -0.3  # user skipped
 
-            agent.update(context_vec, article_emb, reward)
+            agent.update(context_vec, article_emb, reward, context_vec, all_candidates_tensor)
             total_interactions += 1
             total_reward += reward
 
