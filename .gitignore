@@ -6,18 +6,10 @@ dist/
 build/
 *.egg
 
-# Virtual environment - ignore packages but keep our app code
-backend/venv/Lib/
-backend/venv/Scripts/
-backend/venv/Include/
-backend/venv/pyvenv.cfg
-backend/venv/share/
 
 # MIND dataset (too large for git)
 backend/data/
 
-# Trained model (optional - can be regenerated)
-backend/venv/model/
 
 # Node
 node_modules/
