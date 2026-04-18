@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { API_BASE } from '../config';
 
 const CATEGORIES = [
   "news", "finance", "sports", "entertainment", "music", "movies", 
@@ -37,7 +38,7 @@ export default function OnboardingModal({ onComplete }) {
     
     // Store in backend
     try {
-      await fetch('http://localhost:8001/user/register', {
+      await fetch(`${API_BASE}/user/register`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

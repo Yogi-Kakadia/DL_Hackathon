@@ -132,6 +132,18 @@ def load_mind_articles(
     Load articles from MIND news.tsv with semantic TF-IDF embeddings.
     Returns (articles_list, embeddings_array[N, embedding_dim]).
     """
+    runtime_bundle_path = os.path.join(
+        data_dir, f"runtime_bundle_{max_articles}_{embedding_dim}.pkl"
+    )
+    if os.path.exists(runtime_bundle_path):
+        with open(runtime_bundle_path, "rb") as f:
+            bundle = pickle.load(f)
+        articles = bundle.get("articles", [])
+        embeddings = np.asarray(bundle.get("embeddings", []), dtype=np.float32)
+        if articles and len(articles) == len(embeddings):
+            print(f"[OK] Loaded runtime bundle from: {runtime_bundle_path}")
+            return articles, embeddings
+
     possible_paths = [
         os.path.join(data_dir, "MINDlarge_train", "news.tsv"),   # correct path
         os.path.join(data_dir, "MINDlarge_dev", "news.tsv"),

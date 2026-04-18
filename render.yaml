@@ -1,0 +1,10 @@
+services:
+  - type: web
+    runtime: docker
+    name: hyper-personalization-backend
+    plan: free
+    rootDir: backend
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /health
+    autoDeployTrigger: commit

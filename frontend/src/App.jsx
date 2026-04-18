@@ -12,8 +12,7 @@ import { useAttention, CameraPreview } from './components/AttentionTracker'
 import FullArticleReader from './components/FullArticleReader'
 import OnboardingModal   from './components/OnboardingModal'
 import LandingPage       from './components/LandingPage'
-
-const API_BASE = 'http://localhost:8001'
+import { API_BASE }      from './config'
 
 const _savedProfile = JSON.parse(localStorage.getItem('hpe_user_profile') || 'null');
 const _savedUid     = _savedProfile?.user_id || localStorage.getItem('hpe_user_id') || 'demo_user_001'

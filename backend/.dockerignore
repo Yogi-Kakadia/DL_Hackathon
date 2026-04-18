@@ -1,0 +1,10 @@
+*
+!Dockerfile
+!requirements.txt
+!requirements.docker.txt
+!app/
+!app/**
+!data/
+!data/runtime_bundle_250_64.pkl
+**/__pycache__
+**/*.pyc
