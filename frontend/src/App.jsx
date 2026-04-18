@@ -11,6 +11,7 @@ import ToastContainer  from './components/ToastContainer'
 import { useAttention, CameraPreview } from './components/AttentionTracker'
 import FullArticleReader from './components/FullArticleReader'
 import OnboardingModal   from './components/OnboardingModal'
+import LandingPage       from './components/LandingPage'
 
 const API_BASE = 'http://localhost:8001'
 
@@ -19,12 +20,20 @@ const _savedUid     = _savedProfile?.user_id || localStorage.getItem('hpe_user_i
 const _savedPersona = localStorage.getItem('hpe_persona')     || null
 const _savedCold    = localStorage.getItem('hpe_cold_start') === 'true'
 
+function getTimeOfDay() {
+  const h = new Date().getHours()
+  if (h >= 6  && h < 12) return 'Morning'
+  if (h >= 12 && h < 17) return 'Afternoon'
+  if (h >= 17 && h < 21) return 'Evening'
+  return 'Night'
+}
+
 const DEFAULT_CTX = {
   user_id:          _savedUid,
   mood:             'neutral',
   bpm:              72,
   ambient_noise:    30,
-  time_of_day:      'Morning',
+  time_of_day:      getTimeOfDay(),
   reading_speed:    'medium',
   session_duration: 0,
 }
@@ -48,6 +57,8 @@ export default function App() {
   const [readingArticle,      setReadingArticle]      = useState(null)
   const [userProfile,         setUserProfile]         = useState(_savedProfile)
   const [registeredUsers,     setRegisteredUsers]     = useState([])
+  const [showLanding,         setShowLanding]         = useState(true)
+  const [searchQuery,         setSearchQuery]         = useState('')
 
   const attention = useAttention()
 
@@ -101,41 +112,77 @@ export default function App() {
     setLoading(false)
   }, [context, userProfile, addToast])
 
-  const lastHappyTime = useRef(0)
-  
+  /* ── Auto time-of-day ── */
   useEffect(() => {
-    if (isColdStart || !attention?.cameraEnabled) return;
+    const update = () => setContext(prev => ({ ...prev, time_of_day: getTimeOfDay() }))
+    const id = setInterval(update, 60000)
+    return () => clearInterval(id)
+  }, [])
 
-    let timeoutId;
-    const rawMood = attention?.detectedMood || 'neutral';
-    const targetMood = (rawMood.toLowerCase() === 'happy') ? 'happy' : 'neutral';
+  /* ── Camera mood state machine ──
+     happy detected 4s continuous  → activate happy (update left bar + fetch)
+     once happy: neutral 20s continuous → revert to neutral (update left bar + fetch)
+  ── */
+  const happyTimerRef   = useRef(null)  // 4s timer to enter happy
+  const neutralTimerRef = useRef(null)  // 20s timer to exit happy
+  const moodActiveRef   = useRef(false) // whether happy mode is currently locked in
+  const fetchRecsRef    = useRef(fetchRecommendations)
+  useEffect(() => { fetchRecsRef.current = fetchRecommendations }, [fetchRecommendations])
 
-    if (targetMood === 'happy') {
-       if (context.mood !== 'happy') {
-          lastHappyTime.current = Date.now();
-          setContext(prev => ({ ...prev, mood: 'happy' }));
-          fetchRecommendations({ ...context, mood: 'happy' });
-       } else {
-          lastHappyTime.current = Date.now(); // Reset lock timer
-       }
-    } else {
-       if (context.mood === 'happy') {
-          const timeSinceHappy = Date.now() - lastHappyTime.current;
-          if (timeSinceHappy > 30000) {
-             setContext(prev => ({ ...prev, mood: 'neutral' }));
-             fetchRecommendations({ ...context, mood: 'neutral' });
-          } else {
-             timeoutId = setTimeout(() => {
-                setContext(prev => ({ ...prev, mood: 'neutral' }));
-                fetchRecommendations({ ...context, mood: 'neutral' });
-             }, 30000 - timeSinceHappy);
-          }
-       } else if (context.mood !== 'neutral') {
-          setContext(prev => ({ ...prev, mood: 'neutral' }));
-       }
+  useEffect(() => {
+    if (!attention?.cameraEnabled) {
+      clearTimeout(happyTimerRef.current);  happyTimerRef.current  = null
+      clearTimeout(neutralTimerRef.current); neutralTimerRef.current = null
+      return
     }
-    return () => clearTimeout(timeoutId);
-  }, [attention?.detectedMood, attention?.cameraEnabled, isColdStart, context, fetchRecommendations]);
+    const isHappy = attention?.detectedMood?.toLowerCase() === 'happy'
+
+    if (isHappy) {
+      // Cancel the neutral-exit timer — camera is happy again
+      if (neutralTimerRef.current) {
+        clearTimeout(neutralTimerRef.current)
+        neutralTimerRef.current = null
+      }
+      // Start 4s entry timer if not already happy and not already counting
+      if (!moodActiveRef.current && !happyTimerRef.current) {
+        happyTimerRef.current = setTimeout(() => {
+          happyTimerRef.current = null
+          moodActiveRef.current = true
+          setContext(prev => {
+            if (prev.mood === 'happy') return prev
+            const next = { ...prev, mood: 'happy' }
+            fetchRecsRef.current(next)
+            return next
+          })
+        }, 4000)
+      }
+    } else {
+      // Cancel 4s entry timer — mood dropped before 4s
+      if (happyTimerRef.current) {
+        clearTimeout(happyTimerRef.current)
+        happyTimerRef.current = null
+      }
+      // If happy mode is active, start 20s exit timer
+      if (moodActiveRef.current && !neutralTimerRef.current) {
+        neutralTimerRef.current = setTimeout(() => {
+          neutralTimerRef.current = null
+          moodActiveRef.current   = false
+          setContext(prev => {
+            if (prev.mood !== 'happy') return prev
+            const next = { ...prev, mood: 'neutral' }
+            fetchRecsRef.current(next)
+            return next
+          })
+        }, 20000)
+      }
+    }
+  }, [attention?.detectedMood, attention?.cameraEnabled])
+
+  // Cleanup on unmount
+  useEffect(() => () => {
+    clearTimeout(happyTimerRef.current)
+    clearTimeout(neutralTimerRef.current)
+  }, [])
 
   const sendFeedback = useCallback(async (articleId, action, advancedPayload = null) => {
     if (feedbackGiven[articleId]) return
@@ -191,12 +238,13 @@ export default function App() {
     const recs = currentRecs.current
     if (recs.length === 0) return
     setIsAutoDemo(true)
-    for (let i = 0; i < Math.min(recs.length, DEMO_SEQUENCE.length); i++) {
-        await new Promise(r => setTimeout(r, 700))
+    const count = Math.min(recs.length, DEMO_SEQUENCE.length)
+    for (let i = 0; i < count; i++) {
+      await new Promise(r => setTimeout(r, 900))
+      await sendFeedback(recs[i].id, DEMO_SEQUENCE[i])
     }
-    await fetchRecommendations()
     setIsAutoDemo(false)
-  }, [])
+  }, [sendFeedback])
 
   const resetColdStart = useCallback(async (uid = context.user_id) => {
       setIsColdStart(true)
@@ -239,8 +287,12 @@ export default function App() {
     setLoading(false)
   }, [addToast, fetchRecommendations]) 
 
-  const updateContext = useCallback((updates) => {
-    setContext(prev => ({ ...prev, ...updates }))
+  const updateContext = useCallback((keyOrObject, value) => {
+    if (typeof keyOrObject === 'string') {
+      setContext(prev => ({ ...prev, [keyOrObject]: value }))
+    } else {
+      setContext(prev => ({ ...prev, ...keyOrObject }))
+    }
   }, [])
 
   useEffect(() => {
@@ -297,16 +349,26 @@ export default function App() {
     }
   }, []) 
 
+  if (showLanding) {
+    return (
+      <LandingPage
+        onEnter={() => setShowLanding(false)}
+        hasProfile={!!userProfile}
+        registeredUsers={registeredUsers}
+      />
+    )
+  }
+
   if (!userProfile) {
     return (
-      <OnboardingModal 
+      <OnboardingModal
         onComplete={(userId, name) => {
           const profile = JSON.parse(localStorage.getItem('hpe_user_profile'));
           setUserProfile(profile);
           setContext(prev => ({ ...prev, user_id: userId }));
           fetchUsers();
           setTimeout(() => fetchRecommendations(), 500);
-        }} 
+        }}
       />
     );
   }
@@ -314,16 +376,14 @@ export default function App() {
   return (
     <div className="app-layout">
       {/* Top Navbar */}
-      <Header 
+      <Header
         userName={userProfile.name}
         onReset={resetUser}
-        stats={stats}
         explorationRate={explorationRate}
         latency={latency}
-        isColdStart={isColdStart}
-        activePersona={activePersona}
-        isAutoDemo={isAutoDemo}
-        attention={attention}
+        searchQuery={searchQuery}
+        onSearch={setSearchQuery}
+        onBrandClick={() => setShowLanding(true)}
       />
 
       {/* Left sidebar */}
@@ -366,12 +426,19 @@ export default function App() {
           preferences={categoryPreferences}
           stats={stats}
           onReadReq={(article) => setReadingArticle(article)}
+          onRefresh={() => fetchRecommendations()}
+          searchQuery={searchQuery}
         />
       </main>
 
       {/* Right sidebar */}
       <aside className="app-stats-panel">
-        <AgentStats stats={stats} onRefresh={fetchStats} />
+        <AgentStats
+          stats={stats}
+          onRefresh={fetchStats}
+          attention={attention}
+          explorationRate={explorationRate}
+        />
         <PreferenceChart preferences={categoryPreferences} />
         <UserHistory history={userHistory} />
       </aside>

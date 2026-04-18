@@ -1,163 +1,163 @@
 import { useEffect } from 'react'
 
-function Sparkline({ losses, height = 52 }) {
+function Sparkline({ losses, height = 56 }) {
   if (!losses || losses.length < 2) return null
   const w = 200, h = height
   const max = Math.max(...losses, 0.001)
   const pts = losses.map((v, i) => {
     const x = (i / (losses.length - 1)) * w
-    const y = h - (v / max) * h * 0.85 - h * 0.05
+    const y = h - (v / max) * h * 0.88 - h * 0.04
     return `${x.toFixed(1)},${y.toFixed(1)}`
   })
-  const areaPoints = `0,${h} ${pts.join(' ')} ${w},${h}`
-
+  const area = `0,${h} ${pts.join(' ')} ${w},${h}`
+  const last = pts[pts.length - 1].split(',')
   return (
-    <svg
-      viewBox={`0 0 ${w} ${h}`}
-      style={{ width: '100%', height, display: 'block' }}
-      preserveAspectRatio="none"
-    >
+    <svg viewBox={`0 0 ${w} ${h}`} style={{ width: '100%', height, display: 'block' }} preserveAspectRatio="none">
       <defs>
-        <linearGradient id="sparkGrad" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor="var(--accent-primary)" stopOpacity="0.35" />
-          <stop offset="100%" stopColor="var(--accent-primary)" stopOpacity="0" />
+        <linearGradient id="sg" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor="var(--accent)" stopOpacity="0.3" />
+          <stop offset="100%" stopColor="var(--accent)" stopOpacity="0" />
         </linearGradient>
       </defs>
-      <polygon fill="url(#sparkGrad)" points={areaPoints} />
-      <polyline
-        fill="none"
-        stroke="var(--accent-primary)"
-        strokeWidth="1.8"
-        strokeLinejoin="round"
-        points={pts.join(' ')}
-      />
-      {/* last point dot */}
-      {(() => {
-        const last = pts[pts.length - 1].split(',')
-        return <circle cx={last[0]} cy={last[1]} r="3" fill="var(--accent-primary)" />
-      })()}
+      <polygon fill="url(#sg)" points={area} />
+      <polyline fill="none" stroke="var(--accent)" strokeWidth="1.6" strokeLinejoin="round" points={pts.join(' ')} />
+      <circle cx={last[0]} cy={last[1]} r="2.5" fill="var(--accent)" />
     </svg>
   )
 }
 
-export default function AgentStats({ stats, onRefresh }) {
+export default function AgentStats({ stats, onRefresh, attention, explorationRate }) {
   useEffect(() => {
     onRefresh()
     const id = setInterval(onRefresh, 3000)
     return () => clearInterval(id)
   }, []) // eslint-disable-line
 
-  if (!stats) {
-    return (
-      <div className="glass-card">
-        <div className="glass-card-header">
-          <span className="glass-card-title">🧠 RL Agent Brain</span>
-          <span className="agent-live-dot" />
-        </div>
-        <p style={{ fontSize: '0.78rem', color: 'var(--text-tertiary)', textAlign: 'center', padding: 'var(--space-md) 0' }}>
-          Waiting for first interaction…
-        </p>
-      </div>
-    )
-  }
+  const camMood      = attention?.detectedMood || 'neutral'
+  const camActive    = !!attention?.cameraEnabled
+  const camFocused   = !!attention?.isLooking
+  const camLoading   = !!attention?.isLoading
 
-  const epsPct    = Math.round(stats.epsilon * 100)
-  const perfPct   = Math.min(100, Math.round((1 - stats.epsilon) / 0.95 * 100))
-  const modeLabel = stats.epsilon > 0.5 ? '🔍 Cold Start' : stats.epsilon > 0.2 ? '⚖️ Balanced' : '🎯 Exploiting'
-  const modeColor = stats.epsilon > 0.5 ? 'var(--accent-warning)' : stats.epsilon > 0.2 ? 'var(--accent-secondary)' : 'var(--accent-success)'
-  const isLearning = stats.recent_losses?.length > 2
+  const modeLabel = !stats ? '—'
+    : stats.epsilon > 0.5 ? 'Cold Start'
+    : stats.epsilon > 0.2 ? 'Balanced'
+    : 'Exploiting'
 
   return (
-    <div className="glass-card">
-      <div className="glass-card-header">
-        <span className="glass-card-title">
-          🧠 RL Agent Brain
-          {isLearning && <span className="learning-badge">LIVE</span>}
-        </span>
-        <button
-          onClick={onRefresh}
-          style={{
-            background: 'none', border: '1px solid var(--border-subtle)',
-            borderRadius: 'var(--radius-sm)', color: 'var(--text-tertiary)',
-            cursor: 'pointer', padding: '3px 7px', fontSize: '0.66rem',
-          }}
-        >↻</button>
-      </div>
+    <div className="rp-wrap">
 
-      {/* Key metrics */}
-      <div className="stats-grid">
-        <div className="stat-item">
-          <div className="stat-value">{stats.total_interactions}</div>
-          <div className="stat-label">Interactions</div>
-        </div>
-        <div className="stat-item">
-          <div className="stat-value" style={{ color: stats.total_reward >= 0 ? 'var(--accent-success)' : 'var(--accent-danger)' }}>
-            {stats.total_reward >= 0 ? '+' : ''}{stats.total_reward}
+      {/* ── Camera Inference ── */}
+      <div className="rp-section">
+        <div className="rp-overline">AMBIENT</div>
+        <div className="rp-title">Camera Inference</div>
+
+        <div className="rp-cam-rows">
+          <div className="rp-cam-row">
+            <span className="rp-cam-label">Camera Status</span>
+            {camLoading
+              ? <span className="rp-badge rp-badge-warn">Loading</span>
+              : <span className={`rp-badge ${camActive ? 'rp-badge-on' : 'rp-badge-off'}`}>
+                  {camActive ? 'Active' : 'Inactive'}
+                </span>
+            }
           </div>
-          <div className="stat-label">Total Reward</div>
-        </div>
-        <div className="stat-item">
-          <div className="stat-value">{stats.avg_reward}</div>
-          <div className="stat-label">Avg / Step</div>
-        </div>
-        <div className="stat-item">
-          <div className="stat-value">{stats.buffer_size}</div>
-          <div className="stat-label">Replay Buffer</div>
-        </div>
-      </div>
-
-      {/* Exploration bar */}
-      <div className="epsilon-bar-container">
-        <div className="epsilon-header">
-          <span className="epsilon-label" style={{ color: modeColor }}>{modeLabel}</span>
-          <span className="epsilon-value">ε = {stats.epsilon}</span>
-        </div>
-        <div className="epsilon-track">
-          <div className="epsilon-fill" style={{ width: `${epsPct}%`, background: modeColor }} />
-        </div>
-      </div>
-
-      {/* Personalization progress */}
-      <div className="cold-start-progress" style={{ marginTop: 'var(--space-sm)' }}>
-        <div className="epsilon-header">
-          <span className="epsilon-label">
-            {perfPct < 30 ? '🆕 Learning…' : perfPct < 70 ? '📈 Building profile…' : '✅ Personalised!'}
-          </span>
-          <span className="epsilon-value">{perfPct}%</span>
-        </div>
-        <div className="epsilon-track">
-          <div className="personalization-fill" style={{ width: `${perfPct}%` }} />
-        </div>
-      </div>
-
-      {/* SVG Sparkline */}
-      {stats.recent_losses?.length > 1 && (
-        <div className="loss-chart">
-          <div className="loss-chart-title">
-            Training Loss
-            <span style={{ float: 'right', fontFamily: 'var(--font-mono)', fontSize: '0.65rem' }}>
-              avg {stats.avg_loss}
+          <div className="rp-cam-row">
+            <span className="rp-cam-label">Mood</span>
+            <span className={`rp-badge ${camMood === 'happy' ? 'rp-badge-on' : 'rp-badge-neutral'}`}>
+              {camMood.charAt(0).toUpperCase() + camMood.slice(1)}
             </span>
           </div>
-          <Sparkline losses={stats.recent_losses} />
+          <div className="rp-cam-row">
+            <span className="rp-cam-label">Attention</span>
+            <span className={`rp-badge ${camFocused ? 'rp-badge-on' : 'rp-badge-off'}`}>
+              {camActive ? (camFocused ? 'Focused' : 'Away') : '—'}
+            </span>
+          </div>
         </div>
-      )}
 
-      {/* Architecture info */}
-      <div style={{
-        marginTop: 'var(--space-md)',
-        padding: 'var(--space-sm)',
-        background: 'var(--bg-glass)',
-        borderRadius: 'var(--radius-sm)',
-        border: '1px solid var(--border-subtle)',
-      }}>
-        <div style={{ fontSize: '0.62rem', color: 'var(--text-tertiary)', fontFamily: 'var(--font-mono)', lineHeight: 1.85 }}>
-          <div>🏗 Dueling DQN + Prioritized ER</div>
-          <div>📐 TF-IDF + SVD (64D) — CPU optimised</div>
-          <div>🎛 Context: 32D multimodal vector</div>
-          <div>📰 MIND Dataset · 250 balanced articles</div>
-          <div>⚡ Inference: ~2ms per recommendation</div>
+        {camActive && (
+          <p className="rp-cam-note">
+            Mood and attention inferred locally from camera frames. No video is stored or transmitted.
+          </p>
+        )}
+
+        <button
+          className={`rp-cam-toggle ${camActive ? 'active' : ''}`}
+          onClick={() => { if (!camLoading) attention?.toggleCamera() }}
+          disabled={camLoading}
+        >
+          {camLoading ? 'Loading model…' : camActive ? 'Disable Camera' : 'Enable Camera'}
+        </button>
+      </div>
+
+      {/* ── Learning Signal ── */}
+      <div className="rp-section">
+        <div className="rp-overline">ANALYTICS</div>
+        <div className="rp-title">
+          Learning Signal
+          {stats && stats.recent_losses?.length > 2 && <span className="learning-badge">LIVE</span>}
         </div>
+
+        {!stats ? (
+          <p className="rp-empty">Waiting for first interaction…</p>
+        ) : (
+          <>
+            <div className="rp-metric-grid">
+              <div className="rp-metric">
+                <div className="rp-metric-icon">ε</div>
+                <div className="rp-metric-val">{stats.epsilon}</div>
+                <div className="rp-metric-label">Epsilon</div>
+                <div className="rp-metric-sub">{modeLabel}</div>
+              </div>
+              <div className="rp-metric">
+                <div className="rp-metric-icon">Σ</div>
+                <div className="rp-metric-val" style={{ color: stats.total_reward >= 0 ? 'var(--success)' : 'var(--danger)' }}>
+                  {stats.total_reward >= 0 ? '+' : ''}{stats.total_reward}
+                </div>
+                <div className="rp-metric-label">Total Reward</div>
+                <div className="rp-metric-sub">Cumulative policy reward</div>
+              </div>
+              <div className="rp-metric">
+                <div className="rp-metric-icon">n</div>
+                <div className="rp-metric-val">{stats.total_interactions}</div>
+                <div className="rp-metric-label">Interactions</div>
+                <div className="rp-metric-sub">Feedback events received</div>
+              </div>
+            </div>
+
+            <div className="rp-eps-section">
+              <div className="rp-eps-header">
+                <span>Exploration Rate</span>
+                <span>ε = {stats.epsilon}</span>
+              </div>
+              <div className="epsilon-track">
+                <div className="epsilon-fill" style={{ width: `${stats.epsilon * 100}%` }} />
+              </div>
+            </div>
+
+            {stats.recent_losses?.length > 1 && (
+              <div className="rp-chart">
+                <div className="rp-chart-header">
+                  <span>Training Loss</span>
+                  <span style={{ fontFamily: 'var(--font-mono)', fontSize: '0.65rem', color: 'var(--ink-3)' }}>
+                    avg {stats.avg_loss}
+                  </span>
+                </div>
+                <Sparkline losses={stats.recent_losses} />
+              </div>
+            )}
+
+            <div className="rp-arch">
+              <div className="rp-arch-row">Dueling DQN + Prioritized ER</div>
+              <div className="rp-arch-row">TF-IDF + SVD (64D) · CPU optimised</div>
+              <div className="rp-arch-row">Context: 32D multimodal vector</div>
+              <div className="rp-arch-row">MIND Dataset · 250 balanced articles</div>
+              <div className="rp-arch-row">Inference: ~2ms per recommendation</div>
+            </div>
+          </>
+        )}
+
+        <button className="rp-refresh-btn" onClick={onRefresh}>Refresh Stats</button>
       </div>
     </div>
   )

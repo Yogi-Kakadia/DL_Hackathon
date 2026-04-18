@@ -1,95 +1,57 @@
-const PERSONA_LABELS = {
-  alex:       { name: 'Alex Chen',    emoji: '⚽', color: '#ff6b6b' },
-  sam:        { name: 'Sam Rivera',   emoji: '💼', color: '#00d4ff' },
-  jamie:      { name: 'Jamie Park',   emoji: '🌿', color: '#00e88f' },
-  taylor:     { name: 'Taylor Kim',   emoji: '🎬', color: '#ffb347' },
-  morgan:     { name: 'Morgan Wells', emoji: '✈️', color: '#a78bfa' },
-  riley:      { name: 'Riley Zhang',  emoji: '📰', color: '#38bdf8' },
-  cold_start: { name: 'New User',     emoji: '🆕', color: '#7c5cff' },
-}
+import ThemeSelector from './ThemeSelector'
 
-export default function Header({ userName, onReset, stats, explorationRate, latency, isColdStart, activePersona, isAutoDemo, attention }) {
-  const isExploring = explorationRate !== null && explorationRate > 0.3
-  const persona     = activePersona ? PERSONA_LABELS[activePersona] : null
+export default function Header({ userName, onReset, explorationRate, latency, searchQuery, onSearch, onBrandClick }) {
+  const modeLabel = explorationRate == null ? 'Initializing'
+    : explorationRate > 0.5 ? 'Cold Start'
+    : explorationRate > 0.2 ? 'Balanced'
+    : 'Exploiting'
 
   return (
-    <header className="header app-header" id="app-header">
-      <div className="header-brand">
-        <span className="header-brain" role="img" aria-label="brain">🧠</span>
+    <header className="app-header" id="app-header">
+      <div className="hdr-brand" onClick={onBrandClick} style={{ cursor: onBrandClick ? 'pointer' : 'default' }} title="Back to home">
+        <div className="hdr-brand-mark" />
         <div>
-          <div className="header-title">Hyper-Personalization Engine</div>
-          <div className="header-subtitle">Deep RL · Real-Time Adaptation · MIND Dataset</div>
+          <div className="hdr-brand-name">Hyper Feed</div>
+          <div className="hdr-brand-sub">Personal News AI</div>
         </div>
       </div>
-      <div className="header-status">
-        {userName && (
-           <div className="status-badge" style={{ background: 'var(--accent-primary)', color: '#fff', border: 'none' }}>
-             👤 {userName}
-           </div>
-        )}
-        <button 
-           className="status-badge" 
-           style={{ background: 'rgba(124, 92, 255, 0.1)', color: '#7c5cff', border: '1px dashed #7c5cff', cursor: 'pointer' }}
-           onClick={() => onReset()}
-        >
-          [+] New User
-        </button>
-        {/* Active persona badge */}
-        {persona && (
-          <div className="status-badge" style={{
-            borderColor: `${persona.color}55`,
-            background:  `${persona.color}15`,
-            color:        persona.color,
-          }}>
-            {persona.emoji} {persona.name}
-          </div>
-        )}
 
-        {latency !== null && (
-          <div className="status-badge">⚡ {latency}ms</div>
-        )}
-
-        {explorationRate !== null && (
-          <div className="status-badge">
-            <span className={`status-dot ${isExploring ? 'exploring' : ''}`} />
-            {isExploring ? 'Exploring' : 'Exploiting'}
-            <span style={{ opacity: 0.55, marginLeft: 4 }}>ε={explorationRate}</span>
-          </div>
-        )}
-
-        {stats && (
-          <div className="status-badge">
-            📊 {stats.total_interactions} interactions
-          </div>
-        )}
-
-        {attention && (
-          <div 
-            className="status-badge" 
-            style={{ cursor: attention.isLoading ? 'wait' : 'pointer' }}
-            onClick={() => {
-              if (!attention.isLoading) attention.toggleCamera()
-            }}
-            title="Toggle attention tracker"
-          >
-            {attention.isLoading 
-              ? '⏳ Loading Model...'
-              : !attention.cameraEnabled 
-                ? '📷 Track Attention'
-                : (
-                  <>
-                    <span className={`status-dot ${attention.isLooking ? 'online' : 'away'}`} style={{ background: attention.isLooking ? '#00e88f' : '#ff4444', boxShadow: `0 0 8px ${attention.isLooking ? '#00e88f' : '#ff4444'}`}} />
-                    {attention.isLooking ? `Reading (${attention.detectedMood})` : 'Looking Away'}
-                  </>
-                )
-            }
-          </div>
-        )}
-
-        <div className="status-badge">
-          <span className="status-dot online" />
-          Agent Online
+      <div className="hdr-center">
+        <div className="hdr-search">
+          <svg className="hdr-search-icon" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.8">
+            <circle cx="8.5" cy="8.5" r="5.5" /><path d="M13 13l4 4" strokeLinecap="round" />
+          </svg>
+          <input
+            className="hdr-search-input"
+            placeholder="Search articles, topics, signals…"
+            value={searchQuery}
+            onChange={e => onSearch(e.target.value)}
+          />
+          {searchQuery
+            ? <button className="hdr-search-clear" onClick={() => onSearch('')} title="Clear search">×</button>
+            : <span className="hdr-search-kbd">⌘K</span>
+          }
         </div>
+      </div>
+
+      <div className="hdr-right">
+        <div className="hdr-online">
+          <span className="hdr-online-dot" />
+          System Online
+        </div>
+        {latency != null && (
+          <div className="hdr-pill">{latency}ms</div>
+        )}
+        <ThemeSelector />
+        {userName && (
+          <div className="hdr-user" onClick={onReset} title="Click to reset / new user">
+            <div className="hdr-avatar">{userName[0]?.toUpperCase()}</div>
+            <div className="hdr-user-info">
+              <div className="hdr-user-name">{userName}</div>
+              <div className="hdr-user-mode">{modeLabel} Mode</div>
+            </div>
+          </div>
+        )}
       </div>
     </header>
   )
