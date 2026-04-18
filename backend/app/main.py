@@ -45,7 +45,7 @@ app.add_middleware(
 DATA_DIR       = os.path.join(os.path.dirname(__file__), "..", "data")
 EMBEDDING_DIM  = 64
 CONTEXT_DIM    = 32
-MAX_ARTICLES   = 400
+MAX_ARTICLES   = 250
 
 ARTICLES, ARTICLE_EMBEDDINGS_NP = load_mind_articles(
     data_dir=DATA_DIR, max_articles=MAX_ARTICLES, embedding_dim=EMBEDDING_DIM,
@@ -55,12 +55,12 @@ CANDIDATE_EMBEDDINGS = torch.FloatTensor(ARTICLE_EMBEDDINGS_NP)
 agent = RLAgent(
     context_dim=CONTEXT_DIM,
     action_dim=EMBEDDING_DIM,
-    lr=3e-4,
+    lr=5e-4,
     epsilon_start=0.8,
     epsilon_min=0.05,
-    epsilon_decay=0.992,
-    batch_size=64,
-    replay_capacity=10_000,
+    epsilon_decay=0.97,
+    batch_size=32,
+    replay_capacity=5_000,
 )
 
 MODEL_PATH = os.path.join(os.path.dirname(__file__), "..", "model", "trained_agent.pt")
@@ -345,30 +345,99 @@ async def health_check():
     }
 
 
+def _context_boost(bpm: int, noise: int, time_of_day: str) -> Dict[str, float]:
+    """
+    Deterministic per-category boost derived from BPM, ambient noise, and time.
+    This makes context sliders immediately affect rankings without needing training.
+    """
+    boost: Dict[str, float] = {}
+
+    # BPM → energy level
+    if bpm >= 90:          # High energy / workout
+        for c in ["sports", "entertainment", "music"]: boost[c] = boost.get(c, 0) + 0.25
+    elif bpm >= 75:        # Moderate energy
+        for c in ["news", "finance", "autos"]:         boost[c] = boost.get(c, 0) + 0.12
+    else:                  # Calm / low heart rate
+        for c in ["health", "lifestyle", "foodanddrink", "travel"]: boost[c] = boost.get(c, 0) + 0.20
+
+    # Ambient noise → focus vs passive consumption
+    if noise <= 25:        # Quiet — deep focus
+        for c in ["finance", "news", "health", "middleeast", "northamerica"]: boost[c] = boost.get(c, 0) + 0.20
+    elif noise >= 60:      # Noisy — passive / light content
+        for c in ["entertainment", "tv", "movies", "music", "kids"]: boost[c] = boost.get(c, 0) + 0.20
+
+    # Time of day → natural reading habits
+    tod = time_of_day.lower()
+    if tod == "morning":
+        for c in ["news", "finance", "health"]:              boost[c] = boost.get(c, 0) + 0.18
+    elif tod == "afternoon":
+        for c in ["sports", "autos", "northamerica"]:        boost[c] = boost.get(c, 0) + 0.12
+    elif tod == "evening":
+        for c in ["entertainment", "tv", "movies", "music"]: boost[c] = boost.get(c, 0) + 0.18
+    elif tod == "night":
+        for c in ["lifestyle", "foodanddrink", "travel"]:    boost[c] = boost.get(c, 0) + 0.18
+
+    return boost
+
+
 @app.post("/recommend")
 async def get_recommendations(context: ContextPayload):
-    """Personalized recommendations using current context + user history."""
+    """
+    Blended ranking:
+      40% mood + context boost  (immediate effect, no training needed)
+      35% RL agent Q-value rank (learned user preference)
+      25% per-user category pref (click history)
+    This ensures mood-relevant articles are always near the top while
+    the RL agent's learning still shifts rankings over time.
+    """
     start = time.time()
 
     ctx_vec    = encode_context(context)
     ctx_tensor = torch.FloatTensor(ctx_vec).unsqueeze(0)
     user_context_cache[context.user_id] = ctx_vec.copy()
 
-    # Get top-30 candidates from RL agent then apply diversity
-    top_indices = agent.recommend(ctx_tensor, CANDIDATE_EMBEDDINGS, top_k=30)
+    top_indices = agent.recommend(ctx_tensor, CANDIDATE_EMBEDDINGS, top_k=40)
+    n_candidates = len(top_indices)
 
-    mood = context.mood.lower()
+    mood       = context.mood.lower()
+    ctx_boosts = _context_boost(context.bpm, context.ambient_noise, context.time_of_day)
+    user_prefs = user_category_preferences.get(context.user_id, {})
+    max_pref   = max(user_prefs.values(), default=1.0) or 1.0
+
     candidates: List[dict] = []
-    for idx in top_indices:
+    for rl_rank, idx in enumerate(top_indices):
         idx = int(idx)
-        if idx < len(ARTICLES):
-            art = ARTICLES[idx].copy()
-            art["mood_relevance"] = round(art.get("mood_affinity", {}).get(mood, 0.5), 2)
-            candidates.append(art)
+        if idx >= len(ARTICLES):
+            continue
+        art = ARTICLES[idx].copy()
+        cat = art["category"]
 
-    recommended = _diversify(candidates, n=8)
+        # 1. Mood + context score (deterministic)
+        base_mood    = art.get("mood_affinity", {}).get(mood, 0.5)
+        context_bump = ctx_boosts.get(cat, 0.0)
+        mood_score   = min(1.0, base_mood + context_bump)
+
+        # 2. RL agent rank score (0 = last, 1 = first)
+        rl_score = 1.0 - (rl_rank / max(n_candidates, 1))
+
+        # 3. Learned user preference score
+        pref_raw  = user_prefs.get(cat, 0.0)
+        pref_score = min(1.0, max(0.0, pref_raw / max_pref)) if pref_raw > 0 else 0.0
+
+        # Blended final score
+        blend = 0.40 * mood_score + 0.35 * rl_score + 0.25 * pref_score
+
+        art["mood_relevance"] = round(mood_score, 2)
+        art["_blend"]         = blend
+        candidates.append(art)
+
+    # Sort by blended score before diversity filter
+    candidates.sort(key=lambda x: x["_blend"], reverse=True)
+
+    recommended = _diversify(candidates, n=16)
     for rank, art in enumerate(recommended):
         art["rank"] = rank + 1
+        art.pop("_blend", None)
 
     elapsed = round((time.time() - start) * 1000, 1)
     return {
@@ -398,6 +467,7 @@ async def process_feedback(feedback: FeedbackPayload):
     art_emb     = ARTICLE_EMBEDDINGS_NP[feedback.article_id]
     reward      = compute_reward(feedback.action, feedback.dwell_time or 0.0)
     info        = agent.update(ctx_vec, art_emb, reward)
+    agent.action_counts[feedback.article_id] = agent.action_counts.get(feedback.article_id, 0) + 1
 
     # Track clicked embeddings (for user history in context)
     if feedback.action in ("like", "read"):

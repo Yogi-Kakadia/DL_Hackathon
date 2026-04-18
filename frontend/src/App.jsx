@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback } from 'react'
+import { useState, useRef, useCallback, useEffect } from 'react'
 import './index.css'
 import Header          from './components/Header'
 import PersonaSelector from './components/PersonaSelector'
@@ -11,8 +11,13 @@ import ToastContainer  from './components/ToastContainer'
 
 const API_BASE = 'http://localhost:8001'
 
+// Restore last session from localStorage so reload doesn't lose state
+const _savedUid     = localStorage.getItem('hpe_user_id')     || 'demo_user_001'
+const _savedPersona = localStorage.getItem('hpe_persona')     || null
+const _savedCold    = localStorage.getItem('hpe_cold_start') === 'true'
+
 const DEFAULT_CTX = {
-  user_id:          'demo_user_001',
+  user_id:          _savedUid,
   mood:             'happy',
   bpm:              72,
   ambient_noise:    30,
@@ -20,6 +25,9 @@ const DEFAULT_CTX = {
   reading_speed:    'medium',
   session_duration: 0,
 }
+
+// Auto-demo interaction sequence (designed to show clear learning signal)
+const DEMO_SEQUENCE = ['like', 'like', 'read', 'skip', 'like', 'read', 'dislike', 'skip']
 
 export default function App() {
   // ── Core state ──────────────────────────────────────────
@@ -32,20 +40,22 @@ export default function App() {
   const [toasts,              setToasts]              = useState([])
   const [feedbackGiven,       setFeedbackGiven]       = useState({})
   const [userHistory,         setUserHistory]         = useState([])
-  const [isColdStart,         setIsColdStart]         = useState(false)
-  const [activePersona,       setActivePersona]       = useState(null)
+  const [isColdStart,         setIsColdStart]         = useState(_savedCold)
+  const [activePersona,       setActivePersona]       = useState(_savedPersona)
   const [categoryPreferences, setCategoryPreferences] = useState({})
+  const [isAutoDemo,          setIsAutoDemo]          = useState(false)
 
   const articleRenderTime = useRef(Date.now())
+  const currentRecs = useRef([])
 
   // ── Toast ────────────────────────────────────────────────
   const addToast = useCallback((message, type = 'info', icon = 'ℹ️') => {
-    const id = Date.now()
+    const id = Date.now() + Math.random()
     setToasts(prev => [...prev, { id, message, type, icon }])
     setTimeout(() => setToasts(prev => prev.filter(t => t.id !== id)), 3500)
   }, [])
 
-  // ── Fetch recommendations (accepts optional ctx override) ─
+  // ── Fetch recommendations ─────────────────────────────────
   const fetchRecommendations = useCallback(async (ctxOverride = null) => {
     setLoading(true)
     setFeedbackGiven({})
@@ -59,11 +69,12 @@ export default function App() {
       const data = await res.json()
       if (data.status === 'success') {
         setRecommendations(data.recommendations)
+        currentRecs.current = data.recommendations
         setLatency(data.latency_ms)
         setExplorationRate(data.exploration_rate)
         articleRenderTime.current = Date.now()
         addToast(
-          `${data.recommendations.length} articles in ${data.latency_ms}ms · history: ${data.context_used?.history_len ?? 0} clicks`,
+          `${data.recommendations.length} articles · ${data.latency_ms}ms · history: ${data.context_used?.history_len ?? 0} clicks`,
           'success', '⚡'
         )
       }
@@ -94,18 +105,60 @@ export default function App() {
       if (data.status === 'learned') {
         const emoji = { like: '👍', read: '📖', skip: '⏭️', dislike: '👎' }[action] || '🔔'
         addToast(
-          `RL agent learned — reward: ${data.reward_given > 0 ? '+' : ''}${data.reward_given.toFixed(1)}, dwell: ${dwellTime}s`,
+          `Agent learned — reward: ${data.reward_given > 0 ? '+' : ''}${data.reward_given.toFixed(1)}`,
           data.reward_given > 0 ? 'success' : 'warning',
           emoji
         )
         fetchStats()
         fetchHistory()
         fetchPreferences()
+        // Auto-refresh feed so learning is immediately visible
+        setTimeout(() => fetchRecommendations(), 900)
       }
     } catch {
       /* silent */
     }
-  }, [feedbackGiven, context.user_id, addToast])  // eslint-disable-line
+  }, [feedbackGiven, context.user_id, addToast]) // eslint-disable-line
+
+  // ── Auto Demo ─────────────────────────────────────────────
+  const autoDemo = useCallback(async () => {
+    const recs = currentRecs.current
+    if (recs.length === 0) {
+      addToast('Load recommendations first!', 'warning', '⚠️')
+      return
+    }
+    setIsAutoDemo(true)
+    addToast('Auto Demo started — watch the AI learn!', 'info', '🤖')
+
+    const count = Math.min(recs.length, DEMO_SEQUENCE.length)
+    for (let i = 0; i < count; i++) {
+      const art    = recs[i]
+      const action = DEMO_SEQUENCE[i]
+      const emoji  = { like: '👍', read: '📖', skip: '⏭️', dislike: '👎' }[action]
+      addToast(`Demo: ${emoji} "${art.title.slice(0, 35)}…"`, 'info', '🤖')
+
+      await fetch(`${API_BASE}/feedback`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          user_id:    context.user_id,
+          article_id: art.id,
+          action,
+          dwell_time: action === 'read' ? 18 : 3,
+        }),
+      }).catch(() => {})
+
+      setFeedbackGiven(prev => ({ ...prev, [art.id]: action }))
+      fetchStats()
+      await new Promise(r => setTimeout(r, 700))
+    }
+
+    addToast('Demo complete! Fetching personalised feed…', 'success', '✅')
+    await fetchRecommendations()
+    fetchHistory()
+    fetchPreferences()
+    setIsAutoDemo(false)
+  }, [context.user_id, addToast, fetchRecommendations]) // eslint-disable-line
 
   // ── Cold start reset ──────────────────────────────────────
   const resetColdStart = useCallback(async (uid = context.user_id) => {
@@ -119,12 +172,13 @@ export default function App() {
       if (data.status === 'cold_start_activated') {
         setIsColdStart(true)
         setRecommendations([])
+        currentRecs.current = []
         setUserHistory([])
         setCategoryPreferences({})
         setFeedbackGiven({})
         setExplorationRate(1.0)
         fetchStats()
-        addToast('New user — agent is in full exploration mode!', 'info', '🆕')
+        addToast('New user — agent in full exploration mode!', 'info', '🆕')
       }
     } catch {
       addToast('Failed to reset cold start.', 'error', '❌')
@@ -135,6 +189,7 @@ export default function App() {
   const selectPersona = useCallback(async (persona) => {
     setActivePersona(persona.id)
     setRecommendations([])
+    currentRecs.current = []
     setFeedbackGiven({})
 
     if (persona.id === 'cold_start') {
@@ -175,7 +230,7 @@ export default function App() {
     setLoading(false)
   }, [addToast, resetColdStart, fetchRecommendations]) // eslint-disable-line
 
-  // ── Stats / history / preferences pollers ────────────────
+  // ── Stats / history / preferences ───────────────────────
   const fetchStats = useCallback(async () => {
     try {
       const res = await fetch(`${API_BASE}/stats`)
@@ -207,6 +262,28 @@ export default function App() {
     setContext(prev => ({ ...prev, [key]: value }))
   }, [])
 
+  // ── Persist session to localStorage ──────────────────────
+  useEffect(() => {
+    localStorage.setItem('hpe_user_id', context.user_id)
+  }, [context.user_id])
+
+  useEffect(() => {
+    if (activePersona) localStorage.setItem('hpe_persona', activePersona)
+  }, [activePersona])
+
+  useEffect(() => {
+    localStorage.setItem('hpe_cold_start', String(isColdStart))
+  }, [isColdStart])
+
+  // ── Restore session on mount ──────────────────────────────
+  useEffect(() => {
+    fetchStats()
+    if (_savedUid) {
+      fetchHistory()
+      fetchPreferences()
+    }
+  }, []) // eslint-disable-line
+
   // ── Render ───────────────────────────────────────────────
   return (
     <div className="app-layout">
@@ -216,9 +293,10 @@ export default function App() {
         latency={latency}
         isColdStart={isColdStart}
         activePersona={activePersona}
+        isAutoDemo={isAutoDemo}
       />
 
-      {/* Left sidebar — Persona + Context */}
+      {/* Left sidebar */}
       <aside className="app-sidebar">
         <PersonaSelector
           activePersona={activePersona}
@@ -251,10 +329,14 @@ export default function App() {
           feedbackGiven={feedbackGiven}
           loading={loading}
           isColdStart={isColdStart}
+          onAutoDemo={autoDemo}
+          isAutoDemo={isAutoDemo}
+          preferences={categoryPreferences}
+          stats={stats}
         />
       </main>
 
-      {/* Right sidebar — Stats, prefs, history */}
+      {/* Right sidebar — compact stats + preferences + history */}
       <aside className="app-stats-panel">
         <AgentStats stats={stats} onRefresh={fetchStats} />
         <PreferenceChart preferences={categoryPreferences} />

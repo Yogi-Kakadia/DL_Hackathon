@@ -84,7 +84,7 @@ def _compute_tfidf_embeddings(
     from sklearn.preprocessing import normalize
 
     vectorizer = TfidfVectorizer(
-        max_features=10_000,
+        max_features=5_000,
         stop_words="english",
         ngram_range=(1, 2),
         sublinear_tf=True,
@@ -93,7 +93,7 @@ def _compute_tfidf_embeddings(
     tfidf = vectorizer.fit_transform(texts)
 
     n_comp = min(dim, tfidf.shape[0] - 1, tfidf.shape[1] - 1)
-    svd = TruncatedSVD(n_components=n_comp, random_state=42, n_iter=7)
+    svd = TruncatedSVD(n_components=n_comp, random_state=42, n_iter=3)
     emb = svd.fit_transform(tfidf).astype(np.float32)
     emb = normalize(emb, norm="l2")
 
